@@ -1,0 +1,6 @@
+/target/
+/gen/schemas/
+/ui-react/node_modules/
+/ui-react/dist/
+/ui-react/test-results/
+/.winget/

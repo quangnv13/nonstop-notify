@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Nonstop Notify",
+  "version": "0.1.0",
+  "identifier": "dev.nonstop.notify",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "ui-react/dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "quangnv13",
+    "homepage": "https://github.com/quangnv13/nonstop-notify",
+    "icon": ["icons/icon.ico", "icons/128x128.png"],
+    "license": "MIT",
+    "shortDescription": "Desktop notification companion for Nonstop test runs.",
+    "copyright": "Copyright (c) 2026 quangnv13",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

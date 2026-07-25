@@ -1,0 +1,728 @@
+mod actions;
+mod event;
+mod ipc;
+mod toast_store;
+
+use std::io::{self, BufRead, Cursor};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use actions::build_url;
+use event::parse_event;
+use serde::{Deserialize, Serialize};
+use tauri::{
+    AppHandle, Manager, PhysicalPosition, Position, Size, WebviewUrl, WebviewWindowBuilder,
+};
+use toast_store::{ToastStore, ToastView};
+
+const DASHBOARD_BASE: &str = "http://127.0.0.1:4137";
+const NOTIFICATION_SOUND: &[u8] = include_bytes!("../assets/shopee-ring.mp3");
+const WINDOW_WIDTH: f64 = 430.0;
+const MAX_WINDOW_HEIGHT: f64 = 760.0;
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum NotificationPosition {
+    TopLeft,
+    TopRight,
+    #[default]
+    BottomLeft,
+    BottomRight,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+struct NotifyConfig {
+    position: NotificationPosition,
+    offset_left: u16,
+    offset_right: u16,
+    border_width: u16,
+}
+
+impl Default for NotifyConfig {
+    fn default() -> Self {
+        Self {
+            position: NotificationPosition::default(),
+            offset_left: 30,
+            offset_right: 30,
+            border_width: 1,
+        }
+    }
+}
+
+fn parse_config(input: &str) -> Result<NotifyConfig, serde_json::Error> {
+    serde_json::from_str(input)
+}
+
+fn load_config(path: Option<&Path>) -> Result<NotifyConfig, Box<dyn std::error::Error>> {
+    let Some(path) = path else {
+        return Ok(NotifyConfig::default());
+    };
+    let input = std::fs::read_to_string(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("failed to read notify config {}: {error}", path.display()),
+        )
+    })?;
+    parse_config(&input).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid notify config {}: {error}", path.display()),
+        )
+        .into()
+    })
+}
+
+fn config_path_from_args(args: &[String]) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    if let Some(index) = args.iter().position(|arg| arg == "--config") {
+        let path = args.get(index + 1).filter(|value| !value.starts_with("--"));
+        return path.map(PathBuf::from).map(Some).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "--config requires a file path").into()
+        });
+    }
+    Ok(std::env::var_os("NONSTOP_NOTIFY_CONFIG").map(PathBuf::from))
+}
+
+type SharedStore = Arc<Mutex<ToastStore>>;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToastPayload {
+    toasts: Vec<ToastView>,
+    expanded: bool,
+    theme: String,
+    border_width: u16,
+}
+
+#[derive(Debug)]
+struct UiState {
+    store: SharedStore,
+    expanded: Mutex<bool>,
+    window_visible: Mutex<bool>,
+    window_size: Mutex<(i32, i32)>,
+    config: NotifyConfig,
+}
+
+impl UiState {
+    fn new(config: NotifyConfig) -> Self {
+        Self {
+            store: SharedStore::default(),
+            expanded: Mutex::new(false),
+            window_visible: Mutex::new(false),
+            window_size: Mutex::new((0, 0)),
+            config,
+        }
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let result = config_path_from_args(&args).and_then(|config_path| {
+        if args.iter().any(|arg| arg == "--self-check") {
+            self_check(config_path.as_deref())
+        } else if args.get(1).map(String::as_str) == Some("emit")
+            && args.iter().any(|arg| arg == "--stdin")
+        {
+            emit_stdin(config_path.as_deref())
+        } else if args.get(1).map(String::as_str) == Some("emit")
+            && args.get(2).map(String::as_str) == Some("--json")
+        {
+            emit_json(
+                args.get(3).cloned().unwrap_or_default(),
+                config_path.as_deref(),
+            )
+        } else if args.get(1).map(String::as_str) == Some("daemon") {
+            if std::env::var_os("NONSTOP_NOTIFY_DAEMONIZED").is_some() {
+                run_daemon(config_path.as_deref())
+            } else {
+                ipc::spawn_daemon(config_path.as_deref())
+                    .map(|_| ())
+                    .map_err(Into::into)
+            }
+        } else {
+            Ok(())
+        }
+    });
+
+    if let Err(error) = result {
+        if std::env::var_os("NONSTOP_NOTIFY_DEBUG").is_some() {
+            eprintln!("nonstop-notify: {error}");
+        }
+        std::process::exit(1);
+    }
+}
+
+fn self_check(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+    load_config(config_path)?;
+    parse_event(r#"{"event":"test.selfCheck","toastId":"self-check","progress":2}"#)?;
+    validate_notification_sound()?;
+    assert_eq!(
+        build_url(DASHBOARD_BASE, "/runs/manual").as_deref(),
+        Some("http://127.0.0.1:4137/runs/manual")
+    );
+    println!("nonstop-notify self-check ok");
+    Ok(())
+}
+
+fn emit_stdin(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+    let mut input = String::new();
+    io::stdin().lock().read_line(&mut input)?;
+    emit_json(input, config_path)
+}
+
+fn emit_json(input: String, config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+    if input.trim().is_empty() {
+        return Ok(());
+    }
+
+    ipc::append_event_json(&input)?;
+    if !daemon_heartbeat_is_fresh() {
+        let _ = ipc::spawn_daemon(config_path);
+    }
+    Ok(())
+}
+
+struct DaemonLock {
+    path: std::path::PathBuf,
+}
+
+impl Drop for DaemonLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_daemon_lock() -> Result<Option<DaemonLock>, Box<dyn std::error::Error>> {
+    let path = daemon_lock_path();
+    match create_daemon_lock(&path)? {
+        Some(lock) => Ok(Some(lock)),
+        None if !daemon_heartbeat_is_fresh() => {
+            let _ = std::fs::remove_file(&path);
+            create_daemon_lock(&path)
+        }
+        None => Ok(None),
+    }
+}
+
+fn create_daemon_lock(
+    path: &std::path::Path,
+) -> Result<Option<DaemonLock>, Box<dyn std::error::Error>> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            use std::io::Write;
+            let _ = writeln!(file, "{}", std::process::id());
+            Ok(Some(DaemonLock {
+                path: path.to_path_buf(),
+            }))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn daemon_lock_path() -> std::path::PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push("nonstop-notify-daemon.lock");
+    path
+}
+
+fn daemon_heartbeat_path() -> std::path::PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push("nonstop-notify-daemon.heartbeat");
+    path
+}
+
+fn daemon_heartbeat_is_fresh() -> bool {
+    std::fs::metadata(daemon_heartbeat_path())
+        .and_then(|metadata| metadata.modified())
+        .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
+        .map(|age| age < Duration::from_secs(3))
+        .unwrap_or(false)
+}
+
+fn touch_daemon_heartbeat() {
+    let _ = std::fs::write(daemon_heartbeat_path(), b"ok");
+}
+
+fn run_daemon(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(_daemon_lock) = acquire_daemon_lock()? else {
+        return Ok(());
+    };
+    let config = load_config(config_path)?;
+    tauri::Builder::default()
+        .manage(UiState::new(config))
+        .invoke_handler(tauri::generate_handler![
+            close_toast,
+            open_route,
+            set_expanded,
+            report_layout,
+            request_state
+        ])
+        .setup(|app| {
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .title("Nonstop Notify")
+                .inner_size(WINDOW_WIDTH, 1.0)
+                .position(10000.0, 10000.0)
+                .decorations(false)
+                .transparent(true)
+                .always_on_top(true)
+                .skip_taskbar(true)
+                .resizable(false)
+                .visible(false)
+                .shadow(false)
+                .build()?;
+            let handle = app.handle().clone();
+            hide_from_taskbar(&handle);
+            park_window(&handle, 1.0, 1.0);
+            start_event_listener(handle.clone());
+            start_prune_timer(handle);
+            Ok(())
+        })
+        .run(tauri::generate_context!())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn close_toast(app: AppHandle, id: String) -> Result<(), String> {
+    let state = app.state::<UiState>();
+    state
+        .store
+        .lock()
+        .map_err(|_| "toast store lock poisoned".to_string())?
+        .dismiss(&id);
+    emit_state(&app)
+}
+
+#[tauri::command]
+fn open_route(route: String) -> Result<(), String> {
+    if let Some(url) = build_url(DASHBOARD_BASE, &route) {
+        open::that(url).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_expanded(app: AppHandle, expanded: bool) -> Result<(), String> {
+    let state = app.state::<UiState>();
+    *state
+        .expanded
+        .lock()
+        .map_err(|_| "expanded lock poisoned".to_string())? = expanded;
+    emit_state(&app)
+}
+
+#[tauri::command]
+fn request_state(app: AppHandle) -> Result<(), String> {
+    emit_state(&app)
+}
+
+#[tauri::command]
+fn report_layout(app: AppHandle, width: f64, height: f64) -> Result<(), String> {
+    let width = width.clamp(WINDOW_WIDTH, WINDOW_WIDTH);
+    let height = height.clamp(1.0, MAX_WINDOW_HEIGHT);
+    resize_to_content(&app, width, height)
+}
+
+fn start_event_listener(app: AppHandle) {
+    std::thread::spawn(move || {
+        for event_json in ipc::drain_queued_events().unwrap_or_default() {
+            apply_event(&app, &event_json);
+        }
+        let listener_app = app.clone();
+        if let Err(error) =
+            ipc::listen_events(move |event_json| apply_event(&listener_app, &event_json))
+        {
+            if std::env::var_os("NONSTOP_NOTIFY_DEBUG").is_some() {
+                eprintln!("nonstop-notify ipc: {error}");
+            }
+        }
+    });
+}
+
+fn start_prune_timer(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(500));
+        touch_daemon_heartbeat();
+        for event_json in ipc::drain_queued_events().unwrap_or_default() {
+            apply_event(&app, &event_json);
+        }
+    });
+}
+
+fn apply_event(app: &AppHandle, event_json: &str) {
+    match parse_event(event_json) {
+        Ok(event) => {
+            play_notification_sound();
+            let state = app.state::<UiState>();
+            if let Ok(mut store) = state.store.lock() {
+                store.upsert(event);
+            }
+            let _ = emit_state(app);
+        }
+        Err(error) if std::env::var_os("NONSTOP_NOTIFY_DEBUG").is_some() => {
+            eprintln!("nonstop-notify event: {error}");
+        }
+        Err(_) => {}
+    }
+}
+
+fn validate_notification_sound() -> Result<(), Box<dyn std::error::Error>> {
+    rodio::Decoder::try_from(Cursor::new(NOTIFICATION_SOUND))?;
+    Ok(())
+}
+
+fn play_notification_sound() {
+    std::thread::spawn(|| {
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let stream = rodio::DeviceSinkBuilder::open_default_sink()?;
+            let player = rodio::play(stream.mixer(), Cursor::new(NOTIFICATION_SOUND))?;
+            player.sleep_until_end();
+            Ok(())
+        })();
+        if let Err(error) = result {
+            if std::env::var_os("NONSTOP_NOTIFY_DEBUG").is_some() {
+                eprintln!("nonstop-notify sound: {error}");
+            }
+        }
+    });
+}
+
+fn emit_state(app: &AppHandle) -> Result<(), String> {
+    let payload = current_payload(app)?;
+    let should_show = !payload.toasts.is_empty();
+    let should_seed_layout = if should_show {
+        let state = app.state::<UiState>();
+        let visible = state
+            .window_visible
+            .lock()
+            .map_err(|_| "window visible lock poisoned".to_string())?;
+        !*visible
+    } else {
+        false
+    };
+    if should_seed_layout {
+        resize_to_content(
+            app,
+            WINDOW_WIDTH,
+            stacked_height(payload.toasts.len(), payload.expanded),
+        )?;
+    }
+    update_window_visibility(app, should_show)?;
+    if let Some(window) = app.get_webview_window("main") {
+        let script = format!(
+            "window.__NONSTOP_SET_TOASTS && window.__NONSTOP_SET_TOASTS({});",
+            serde_json::to_string(&payload).map_err(|error| error.to_string())?
+        );
+        window.eval(&script).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn stacked_height(count: usize, expanded: bool) -> f64 {
+    let count = count.clamp(1, 5);
+    if expanded {
+        (56.0 + count as f64 * 108.0).clamp(180.0, MAX_WINDOW_HEIGHT)
+    } else if count > 1 {
+        190.0
+    } else {
+        150.0
+    }
+}
+
+fn current_payload(app: &AppHandle) -> Result<ToastPayload, String> {
+    let state = app.state::<UiState>();
+    let toasts = state
+        .store
+        .lock()
+        .map_err(|_| "toast store lock poisoned".to_string())?
+        .visible_views();
+    let expanded = *state
+        .expanded
+        .lock()
+        .map_err(|_| "expanded lock poisoned".to_string())?;
+    Ok(ToastPayload {
+        toasts,
+        expanded,
+        theme: system_theme(),
+        border_width: state.config.border_width,
+    })
+}
+
+fn system_theme() -> String {
+    if system_prefers_dark() {
+        "dark".into()
+    } else {
+        "light".into()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn system_prefers_dark() -> bool {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+
+    let subkey: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let value_name: Vec<u16> = "AppsUseLightTheme".encode_utf16().chain(Some(0)).collect();
+    let mut value = 1u32;
+    let mut value_size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            value_name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut value as *mut u32).cast(),
+            &mut value_size,
+        )
+    };
+    prefers_dark_from_registry_value((status == 0).then_some(value))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn system_prefers_dark() -> bool {
+    false
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn prefers_dark_from_registry_value(value: Option<u32>) -> bool {
+    value == Some(0)
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::{prefers_dark_from_registry_value, top_right_x};
+
+    #[test]
+    fn primary_monitor_position_accounts_for_scale_factor() {
+        assert_eq!(top_right_x(0, 1920, 430.0, 1.5, 30), 1245);
+    }
+
+    #[test]
+    fn windows_theme_registry_value_zero_means_dark() {
+        assert!(prefers_dark_from_registry_value(Some(0)));
+        assert!(!prefers_dark_from_registry_value(Some(1)));
+        assert!(!prefers_dark_from_registry_value(None));
+    }
+}
+
+fn update_window_visibility(app: &AppHandle, should_show: bool) -> Result<(), String> {
+    let state = app.state::<UiState>();
+    let mut visible = state
+        .window_visible
+        .lock()
+        .map_err(|_| "window visible lock poisoned".to_string())?;
+    if *visible == should_show {
+        return Ok(());
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        if should_show {
+            window.show().map_err(|error| error.to_string())?;
+        } else {
+            window.hide().map_err(|error| error.to_string())?;
+        }
+    }
+    *visible = should_show;
+    Ok(())
+}
+
+fn resize_to_content(app: &AppHandle, width: f64, height: f64) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    let width_px = width.round() as i32;
+    let height_px = height.round() as i32;
+    let state = app.state::<UiState>();
+    let mut last_size = state
+        .window_size
+        .lock()
+        .map_err(|_| "window size lock poisoned".to_string())?;
+    if *last_size == (width_px, height_px) {
+        return Ok(());
+    }
+    window
+        .set_size(Size::Logical(tauri::LogicalSize { width, height }))
+        .map_err(|error| error.to_string())?;
+    position_window(app, width, height)?;
+    *last_size = (width_px, height_px);
+    Ok(())
+}
+
+fn park_window(app: &AppHandle, width: f64, height: f64) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_size(Size::Logical(tauri::LogicalSize { width, height }));
+        let _ = window.set_position(Position::Physical(PhysicalPosition { x: 10000, y: 10000 }));
+    }
+}
+
+fn top_right_x(
+    area_x: i32,
+    area_width: u32,
+    logical_window_width: f64,
+    scale_factor: f64,
+    offset_right: u16,
+) -> i32 {
+    let physical_window_width = (logical_window_width * scale_factor).round() as i32;
+    (area_x + area_width as i32 - physical_window_width - i32::from(offset_right)).max(area_x)
+}
+
+fn window_position(
+    position: NotificationPosition,
+    area_x: i32,
+    area_y: i32,
+    area_width: u32,
+    area_height: u32,
+    logical_width: f64,
+    logical_height: f64,
+    scale_factor: f64,
+    offset_left: u16,
+    offset_right: u16,
+) -> (i32, i32) {
+    let physical_height = (logical_height * scale_factor).round() as i32;
+    let left = area_x + i32::from(offset_left);
+    let right = top_right_x(
+        area_x,
+        area_width,
+        logical_width,
+        scale_factor,
+        offset_right,
+    );
+    let top = area_y + 30;
+    let bottom = (area_y + area_height as i32 - physical_height - 30).max(area_y);
+    match position {
+        NotificationPosition::TopLeft => (left, top),
+        NotificationPosition::TopRight => (right, top),
+        NotificationPosition::BottomLeft => (left, bottom),
+        NotificationPosition::BottomRight => (right, bottom),
+    }
+}
+
+fn position_window(app: &AppHandle, logical_width: f64, logical_height: f64) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    let monitor = window
+        .primary_monitor()
+        .map_err(|error| error.to_string())?;
+    let Some(monitor) = monitor else {
+        return Ok(());
+    };
+    let area = monitor.work_area();
+    let config = app.state::<UiState>().config;
+    let (x, y) = window_position(
+        config.position,
+        area.position.x,
+        area.position.y,
+        area.size.width,
+        area.size.height,
+        logical_width,
+        logical_height,
+        monitor.scale_factor(),
+        config.offset_left,
+        config.offset_right,
+    );
+    window
+        .set_position(Position::Physical(PhysicalPosition { x, y }))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod position_tests {
+    use super::{parse_config, window_position, NotificationPosition, NotifyConfig};
+
+    #[test]
+    fn missing_config_defaults_to_bottom_left() {
+        let config = NotifyConfig::default();
+        assert_eq!(config.position, NotificationPosition::BottomLeft);
+        assert_eq!(config.offset_left, 30);
+        assert_eq!(config.offset_right, 30);
+        assert_eq!(config.border_width, 1);
+    }
+
+    #[test]
+    fn config_parses_supported_position() {
+        let config = parse_config(
+            r#"{"position":"top-right","offsetLeft":12,"offsetRight":18,"borderWidth":2}"#,
+        )
+        .unwrap();
+        assert_eq!(config.position, NotificationPosition::TopRight);
+        assert_eq!(config.offset_left, 12);
+        assert_eq!(config.offset_right, 18);
+        assert_eq!(config.border_width, 2);
+    }
+
+    #[test]
+    fn window_position_uses_work_area_and_scale() {
+        assert_eq!(
+            (12, 630),
+            window_position(
+                NotificationPosition::BottomLeft,
+                0,
+                0,
+                1920,
+                1080,
+                430.0,
+                280.0,
+                1.5,
+                12,
+                18
+            )
+        );
+        assert_eq!(
+            (1257, 30),
+            window_position(
+                NotificationPosition::TopRight,
+                0,
+                0,
+                1920,
+                1080,
+                430.0,
+                280.0,
+                1.5,
+                12,
+                18
+            )
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn hide_from_taskbar(app: &AppHandle) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        if let Ok(hwnd) = window.hwnd() {
+            unsafe {
+                let hwnd = hwnd.0 as HWND;
+                let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                SetWindowLongPtrW(
+                    hwnd,
+                    GWL_EXSTYLE,
+                    (ex_style & !(WS_EX_APPWINDOW as isize)) | WS_EX_TOOLWINDOW as isize,
+                );
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn hide_from_taskbar(_: &AppHandle) {}
+
+#[cfg(test)]
+mod notification_sound_tests {
+    use super::*;
+
+    #[test]
+    fn bundled_notification_sound_is_decodable() {
+        assert!(validate_notification_sound().is_ok());
+    }
+}
