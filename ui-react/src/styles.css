@@ -48,6 +48,7 @@ html, body, #root { margin: 0; width: 100%; height: 100%; overflow: hidden; back
 [data-sonner-toast][data-styled="true"] { width: 400px !important; }
 .notify-sonner-toast { overflow: visible !important; padding-right: 44px !important; }
 .notify-body { display: grid; gap: 10px; min-width: 0; padding-top: 1px; }
+.notify-message { white-space: pre-line; }
 .notify-actions { display: flex; gap: 8px; padding-top: 2px; }
 .notify-action {
   min-height: 30px;

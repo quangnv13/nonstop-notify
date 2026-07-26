@@ -170,7 +170,7 @@ function ToastDescription({ item }: { item: ToastItem }) {
 
   return (
     <div className="notify-body">
-      <span>{item.message || statusLabel(item.state)}</span>
+      <span className="notify-message">{item.message || statusLabel(item.state)}</span>
       {(item.primaryRoute || item.secondaryRoute) ? (
         <div className="notify-actions">
           {item.primaryRoute ? <button className="notify-action notify-action-primary" type="button" onClick={open(item.primaryRoute)}>{item.primaryLabel || 'Open'}</button> : null}
