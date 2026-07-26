@@ -178,14 +178,17 @@ npm.cmd --prefix ui-react run dev
 
 ## Code Signing Policy
 
-Free code signing is provided by [SignPath.io](https://signpath.io/), with a certificate provided by the [SignPath Foundation](https://signpath.org/).
+Free code signing provided by [SignPath.io](https://signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
 
 - Source repository: `quangnv13/nonstop-notify`
 - Build system: GitHub-hosted GitHub Actions runners
-- Committer and reviewer: `quangnv13`
-- Signing approver: `quangnv13`
+- Committers and reviewers: [`quangnv13`](https://github.com/quangnv13)
+- Approvers: [`quangnv13`](https://github.com/quangnv13)
 - Signing is limited to release artifacts produced from version tags by the repository workflow.
 - Signing credentials are not stored in the repository or exposed to project maintainers.
+- Privacy policy: This program will not transfer any information to other networked systems unless specifically requested by the user or the person installing or operating it.
+
+Current eligibility and application work are tracked in [`docs/signpath-free-code-signing-checklist.md`](docs/signpath-free-code-signing-checklist.md).
 
 ## Release
 
