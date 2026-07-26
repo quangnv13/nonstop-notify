@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "windows/path-integration.ps1": "path-integration.ps1"
+    }
+  }
+}

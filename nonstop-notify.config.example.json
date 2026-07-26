@@ -2,5 +2,6 @@
   "position": "bottom-left",
   "offsetLeft": 30,
   "offsetRight": 30,
-  "borderWidth": 1
+  "borderWidth": 1,
+  "soundPath": null
 }

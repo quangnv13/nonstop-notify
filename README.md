@@ -30,6 +30,8 @@ It was originally built for the Nonstop test platform, but the event format and 
 
 ## Quick Start
 
+### Windows
+
 Send an event from PowerShell:
 
 ```powershell
@@ -48,6 +50,28 @@ The daemon starts automatically. Running it explicitly is optional:
 
 ```powershell
 .\nonstop-notify.exe daemon
+```
+
+### Linux
+
+After installing the DEB package or placing the AppImage binary on `PATH`, send an event from Bash:
+
+```bash
+printf '%s\n' '{"event":"deploy.started","toastId":"deploy:api","title":"Deploying API","message":"Publishing to staging","status":"loading","progress":0.35}' |
+  nonstop-notify emit --stdin
+```
+
+Update the same toast:
+
+```bash
+printf '%s\n' '{"event":"deploy.completed","toastId":"deploy:api","title":"Deployment complete","message":"Staging is ready","status":"success","progress":1,"primaryLabel":"View deployment","primaryRoute":"https://example.com/deployments/42"}' |
+  nonstop-notify emit --stdin
+```
+
+The daemon also starts automatically on Linux. Running it explicitly is optional:
+
+```bash
+nonstop-notify daemon
 ```
 
 ## CLI
@@ -128,11 +152,16 @@ Copy `nonstop-notify.config.example.json` and adjust it:
   "position": "bottom-left",
   "offsetLeft": 30,
   "offsetRight": 30,
-  "borderWidth": 1
+  "borderWidth": 1,
+  "soundPath": null
 }
 ```
 
 Supported positions: `top-left`, `top-right`, `bottom-left`, and `bottom-right`.
+
+`soundPath` is optional. When omitted or `null`, Windows uses the native system notification sound. Other platforms play a short deterministic WAV generated during the Rust build. Set `soundPath` to a local WAV, MP3, FLAC, or OGG/Vorbis file to use a custom notification sound.
+
+`--self-check` fails when a custom sound cannot be read or decoded. Runtime sound failures do not discard notifications; set `NONSTOP_NOTIFY_DEBUG=1` to log them.
 
 ```powershell
 .\nonstop-notify.exe emit --stdin --config .\nonstop-notify.config.json
@@ -144,6 +173,47 @@ Tagged GitHub releases are built for:
 
 - Windows x64 as an NSIS installer.
 - Linux x64 as DEB and AppImage packages.
+
+### Windows
+
+Install with WinGet after the package is published:
+
+```powershell
+winget install --id quangnv13.nonstop-notify --exact
+```
+
+The NSIS installer adds its install directory to the current user's `PATH`. Close existing terminal windows, open a new terminal, then verify the CLI:
+
+```powershell
+nonstop-notify --self-check
+```
+
+Uninstalling removes only the `PATH` entry created by the installer.
+
+### Linux DEB
+
+The DEB package installs `nonstop-notify` in `/usr/bin`, so the CLI is immediately available:
+
+```bash
+nonstop-notify --self-check
+```
+
+### Linux AppImage
+
+AppImage is portable and does not install itself or update `PATH`:
+
+```bash
+chmod +x ./Nonstop.Notify_0.1.0_amd64.AppImage
+./Nonstop.Notify_0.1.0_amd64.AppImage --self-check
+```
+
+Create a stable CLI command when `~/.local/bin` is on `PATH`:
+
+```bash
+mkdir -p ~/.local/bin
+ln -s "$PWD/Nonstop.Notify_0.1.0_amd64.AppImage" ~/.local/bin/nonstop-notify
+nonstop-notify --self-check
+```
 
 Until a release is published, build from source using the steps below.
 

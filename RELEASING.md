@@ -23,14 +23,26 @@ wingetcreate token --store
 
 Use OAuth flow from `wingetcreate token --store`. Do not place credentials in shared command history.
 
-## 2. Set release version
+## 2. Complete pre-release checks
+
+```powershell
+node scripts/check-licenses.mjs
+```
+
+Before creating a release:
+
+- Verify GitHub MFA is enabled for every project member.
+- Treat the release-notes link to README `Code Signing Policy` as automatic workflow output; verify it after the Release exists.
+
+## 3. Set release version
 
 Keep `[package].version` in `Cargo.toml` equal to `version` in `tauri.conf.json`. First release uses `0.1.0` and Git tag `v0.1.0`.
 
-## 3. Build installer
+## 4. Build installer
 
 ```powershell
 npm --prefix ui-react run build
+./scripts/check-installer-path.ps1
 cargo tauri build --bundles nsis
 ```
 
@@ -44,12 +56,12 @@ Get-FileHash $installer -Algorithm SHA256
 Test silent installation on a clean Windows user:
 
 ```powershell
-Start-Process -FilePath $installer -ArgumentList '/S' -Wait
+./scripts/smoke-test-windows-installer.ps1 -InstallerPath $installer
 ```
 
-Confirm app appears under Windows installed apps and can be removed normally. NSIS uninstall also supports `/S` for unattended cleanup.
+The smoke test installs silently, refreshes PATH, runs `nonstop-notify --self-check`, uninstalls silently, and verifies the original user PATH is restored exactly.
 
-## 4. Create GitHub Release
+## 5. Create GitHub Release
 
 Commit and push release source first. Then create and push tag:
 
@@ -63,7 +75,7 @@ The `Build` GitHub Actions workflow tests and packages Windows and Linux. After 
 
 Open the completed Actions run, confirm all jobs passed, then copy the direct HTTPS URL of the uploaded Windows `.exe` asset from the release page. URL must stay immutable for WinGet validation.
 
-## 5. Create and submit WinGet manifest
+## 6. Create and submit WinGet manifest
 
 ```powershell
 $installerUrl = 'https://github.com/quangnv13/nonstop-notify/releases/download/v0.1.0/INSTALLER_FILE.exe'
@@ -87,11 +99,17 @@ Use these metadata values when prompted:
 
 `wingetcreate new` validates generated YAML and offers pull request submission after authentication. Keep `.winget/` only for inspection; generated manifests belong in `microsoft/winget-pkgs`, not this repository.
 
-## 6. Verify after merge
+## 7. Verify after merge
 
 ```powershell
 winget show --id quangnv13.nonstop-notify --exact
 winget install --id quangnv13.nonstop-notify --exact
+```
+
+Close existing terminal windows, open a new terminal, then verify PATH integration:
+
+```powershell
+nonstop-notify --self-check
 ```
 
 For later releases:

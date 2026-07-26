@@ -69,24 +69,44 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci --prefix ui-react --ignore-scripts
 
+      - name: Audit dependency licenses
+        run: node scripts/check-licenses.mjs
+
       - name: Build frontend
         run: npm --prefix ui-react run build
 
       - name: Run Rust tests
         run: cargo test --locked
 
+      - name: Check Windows installer PATH integration
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-installer-path.ps1
+
       - name: Build Tauri bundles
         uses: tauri-apps/tauri-action@v1
         with:
           args: --bundles ${{ matrix.bundles }}
 
+      - name: Smoke test installed Windows CLI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/smoke-test-windows-installer.ps1 -InstallerPath (Get-ChildItem target/release/bundle/nsis -Filter '*.exe').FullName
+
       - name: Upload bundles
+        id: upload-bundles
         uses: actions/upload-artifact@v4
         with:
           name: nonstop-notify-${{ matrix.name }}
           path: ${{ matrix.artifactPath }}
           if-no-files-found: error
           retention-days: 14
+
+      - name: Record Windows unsigned bundle artifact
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "Windows unsigned bundle artifact ID: ${{ steps.upload-bundles.outputs.artifact-id }}" >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: Create GitHub Release
@@ -117,5 +137,6 @@ jobs:
           gh release create "$GITHUB_REF_NAME" "${assets[@]}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "Nonstop Notify ${GITHUB_REF_NAME#v}" \
+            --notes "[Code Signing Policy](https://github.com/${GITHUB_REPOSITORY}#code-signing-policy)" \
             --generate-notes \
             --verify-tag

@@ -25,7 +25,8 @@
     "copyright": "Copyright (c) 2026 quangnv13",
     "windows": {
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "installerHooks": "windows/nsis-hooks.nsh"
       }
     }
   }

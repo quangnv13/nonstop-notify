@@ -23,15 +23,14 @@ Main blockers before applying:
 1. Publish an initial release in the same installer form that will later be signed.
 2. Confirm GitHub multi-factor authentication for every project member.
 3. Build verifiable public project reputation; a new project with no public release may still be rejected.
-4. Review dependency licenses and confirm that no proprietary component is distributed.
 
 ## Eligibility Checklist
 
 | # | SignPath Foundation condition | Status | Repository evidence / required action |
 | --- | --- | --- | --- |
 | 1 | Project contains no malware or potentially unwanted program behavior. | **PASS** | Reviewed application purpose and source paths only implement local event ingestion, notification rendering, URL validation, and packaging. No malware or PUA behavior is known. |
-| 2 | Every component uses an OSI-approved Open Source license without commercial dual licensing. | **PARTIAL** | Project itself uses MIT in `LICENSE` and `Cargo.toml`. Confirm every Cargo/npm dependency license before applying. |
-| 3 | No proprietary code or proprietary bundled component. | **PARTIAL** | Project source is public and dependencies come from Cargo/npm registries. Run a dependency-license audit before applying and record any bundled binary exceptions. |
+| 2 | Every component uses an OSI-approved Open Source license without commercial dual licensing. | **PASS** | `node scripts/check-licenses.mjs` audited 459 Rust and 75 npm dependencies with 0 issues. CI runs the same consolidated license audit. |
+| 3 | No proprietary code or proprietary bundled component. | **PASS** | The unlicensed audio asset was removed. `build.rs` now generates the bundled WAV deterministically from project source, and the consolidated dependency audit reports 0 issues. |
 | 4 | Project is actively maintained. | **PASS** | Recent commits and successful GitHub Actions runs exist on `master`. |
 | 5 | Project is already released in the form to be signed. | **FAIL** | GitHub currently has no version tags and no Releases. Publish the NSIS `.exe` through a `v*` tag before applying. |
 | 6 | Functionality is documented on the project/download page. | **PASS** | `README.md` documents purpose, commands, event schema, configuration, installation, privacy, and release flow. |
@@ -45,10 +44,10 @@ Main blockers before applying:
 | 14 | Authors, reviewers, and signing approvers are assigned. | **PASS** | `README.md` lists `quangnv13` as committer/reviewer and approver. |
 | 15 | Home page contains a **Code Signing Policy** heading or link. | **PASS** | `README.md` has a `Code Signing Policy` section and the exact SignPath attribution statement. |
 | 16 | Policy identifies roles and includes a privacy policy or required privacy statement. | **PASS** | `README.md` names the roles and contains the required no-network-transfer statement with the user-request exception. |
-| 17 | Download/release pages reference the code-signing policy. | **PARTIAL** | No Release exists yet. Include a link to the README policy in the first and later release notes. |
+| 17 | Download/release pages reference the code-signing policy. | **PARTIAL** | No Release exists yet. The tag release workflow will automatically prepend the README `Code Signing Policy` link to generated release notes; verify it on the first actual Release. |
 | 18 | Product name and version metadata are consistent in signed files. | **PASS** | Tauri product name is `Nonstop Notify`; `Cargo.toml` and `tauri.conf.json` both use version `0.1.0`. SignPath artifact restrictions still need configuration after approval. |
 | 19 | Binary artifact is built from source in a verifiable automated build. | **PASS** | Workflow uses GitHub-hosted `windows-latest` and `ubuntu-22.04` jobs. Build run [`30196273129`](https://github.com/quangnv13/nonstop-notify/actions/runs/30196273129) completed successfully for both platforms. |
-| 20 | Unsigned artifact is stored as a GitHub workflow artifact before signing submission. | **PARTIAL** | Build matrix already uses `actions/upload-artifact@v4`, but the step needs an `id` and its artifact ID must be passed to the future SignPath submit action. |
+| 20 | Unsigned artifact is stored as a GitHub workflow artifact before signing submission. | **PASS** | Build matrix uses `actions/upload-artifact@v4` with a step `id`, exposing `artifact-id` before any future SignPath submission. The future submit action can consume that output after SignPath configuration exists. |
 | 21 | Every release receives manual approval before signing. | **POST-APPROVAL** | Configure SignPath signing policy and approver after acceptance. Current workflow performs no signing request. |
 | 22 | SignPath GitHub App, project, artifact configuration, and submitter token are configured. | **POST-APPROVAL** | No SignPath GitHub action or `.signpath` policy exists yet. Add these only after organization/project identifiers are issued. |
 | 23 | Project accepts SignPath technical constraints and assists with policy investigations. | **PARTIAL** | This checklist records the obligation. It becomes operational when the project applies and accepts the service terms. |
@@ -94,13 +93,13 @@ Before applying to SignPath, verify:
 - Release is public and not a draft.
 - Windows release contains the versioned NSIS `.exe`.
 - Installer downloads and uninstalls correctly.
-- Release notes link to the README `Code Signing Policy` section.
+- Workflow-generated release notes contain the automatically prepended README `Code Signing Policy` link.
 - Release artifact is the same installer format intended for future signing.
 
 ## SignPath Application Sequence
 
 1. Publish the initial unsigned `v0.1.0` release. SignPath requires an existing release in the form to be signed.
-2. Confirm GitHub MFA and dependency-license compliance.
+2. Confirm GitHub MFA and clean dependency-license checks.
 3. Submit the SignPath Foundation application with repository, workflow, release, privacy, and role links.
 4. Wait for project and reputation review.
 5. After acceptance, install the SignPath GitHub App and configure the SignPath project, signing policy, artifact configuration, and submitter token.
@@ -120,5 +119,5 @@ Before applying to SignPath, verify:
 Re-run this checklist after the first `v0.1.0` release. Expected status changes:
 
 - Condition 5: **FAIL** to **PASS**.
-- Condition 17: **PARTIAL** to **PASS** after adding the policy link to release notes.
+- Condition 17: **PARTIAL** to **PASS** after verifying the workflow-added policy link on the actual Release.
 - Condition 24: remains discretionary, but gains public release evidence.

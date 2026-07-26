@@ -17,7 +17,7 @@ use tauri::{
 use toast_store::{ToastStore, ToastView};
 
 const DASHBOARD_BASE: &str = "http://127.0.0.1:4137";
-const NOTIFICATION_SOUND: &[u8] = include_bytes!("../assets/shopee-ring.mp3");
+const NOTIFICATION_SOUND: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/notification.wav"));
 const WINDOW_WIDTH: f64 = 430.0;
 const MAX_WINDOW_HEIGHT: f64 = 760.0;
 
@@ -31,13 +31,14 @@ enum NotificationPosition {
     BottomRight,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 struct NotifyConfig {
     position: NotificationPosition,
     offset_left: u16,
     offset_right: u16,
     border_width: u16,
+    sound_path: Option<PathBuf>,
 }
 
 impl Default for NotifyConfig {
@@ -47,6 +48,7 @@ impl Default for NotifyConfig {
             offset_left: 30,
             offset_right: 30,
             border_width: 1,
+            sound_path: None,
         }
     }
 }
@@ -154,9 +156,9 @@ fn main() {
 }
 
 fn self_check(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
-    load_config(config_path)?;
+    let config = load_config(config_path)?;
     parse_event(r#"{"event":"test.selfCheck","toastId":"self-check","progress":2}"#)?;
-    validate_notification_sound()?;
+    validate_notification_sound(config.sound_path.as_deref())?;
     assert_eq!(
         build_url(DASHBOARD_BASE, "/runs/manual").as_deref(),
         Some("http://127.0.0.1:4137/runs/manual")
@@ -357,7 +359,7 @@ fn start_prune_timer(app: AppHandle) {
 fn apply_event(app: &AppHandle, event_json: &str) {
     match parse_event(event_json) {
         Ok(event) => {
-            play_notification_sound();
+            play_notification_sound(app.state::<UiState>().config.sound_path.clone());
             let state = app.state::<UiState>();
             if let Ok(mut store) = state.store.lock() {
                 store.upsert(event);
@@ -371,25 +373,93 @@ fn apply_event(app: &AppHandle, event_json: &str) {
     }
 }
 
-fn validate_notification_sound() -> Result<(), Box<dyn std::error::Error>> {
-    rodio::Decoder::try_from(Cursor::new(NOTIFICATION_SOUND))?;
+fn validate_notification_sound(
+    sound_path: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(path) = sound_path {
+        let bytes = read_custom_notification_sound(path)?;
+        rodio::Decoder::try_from(Cursor::new(bytes)).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "failed to decode notification sound {}: {error}",
+                    path.display()
+                ),
+            )
+        })?;
+    } else {
+        rodio::Decoder::try_from(Cursor::new(NOTIFICATION_SOUND))?;
+    }
     Ok(())
 }
 
-fn play_notification_sound() {
-    std::thread::spawn(|| {
-        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            let stream = rodio::DeviceSinkBuilder::open_default_sink()?;
-            let player = rodio::play(stream.mixer(), Cursor::new(NOTIFICATION_SOUND))?;
-            player.sleep_until_end();
-            Ok(())
-        })();
+fn read_custom_notification_sound(path: &Path) -> Result<Vec<u8>, io::Error> {
+    std::fs::read(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "failed to read notification sound {}: {error}",
+                path.display()
+            ),
+        )
+    })
+}
+
+fn play_notification_sound(sound_path: Option<PathBuf>) {
+    std::thread::spawn(move || {
+        let result = play_notification_sound_inner(sound_path.as_deref());
         if let Err(error) = result {
             if std::env::var_os("NONSTOP_NOTIFY_DEBUG").is_some() {
                 eprintln!("nonstop-notify sound: {error}");
             }
         }
     });
+}
+
+fn play_notification_sound_inner(
+    sound_path: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(path) = sound_path {
+        let bytes = read_custom_notification_sound(path)?;
+        return play_decoded_notification_sound(bytes, Some(path));
+    }
+    play_default_notification_sound()
+}
+
+fn play_decoded_notification_sound(
+    bytes: Vec<u8>,
+    source_path: Option<&Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let stream = rodio::DeviceSinkBuilder::open_default_sink()?;
+    let player =
+        rodio::play(stream.mixer(), Cursor::new(bytes)).map_err(|error| match source_path {
+            Some(path) => io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "failed to decode notification sound {}: {error}",
+                    path.display()
+                ),
+            ),
+            None => io::Error::new(io::ErrorKind::InvalidData, error.to_string()),
+        })?;
+    player.sleep_until_end();
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn play_default_notification_sound() -> Result<(), Box<dyn std::error::Error>> {
+    use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
+    use windows_sys::Win32::UI::WindowsAndMessaging::MB_ICONINFORMATION;
+
+    if unsafe { MessageBeep(MB_ICONINFORMATION) } == 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn play_default_notification_sound() -> Result<(), Box<dyn std::error::Error>> {
+    play_decoded_notification_sound(NOTIFICATION_SOUND.to_vec(), None)
 }
 
 fn emit_state(app: &AppHandle) -> Result<(), String> {
@@ -615,7 +685,8 @@ fn position_window(app: &AppHandle, logical_width: f64, logical_height: f64) -> 
         return Ok(());
     };
     let area = monitor.work_area();
-    let config = app.state::<UiState>().config;
+    let state = app.state::<UiState>();
+    let config = &state.config;
     let (x, y) = window_position(
         config.position,
         area.position.x,
@@ -636,6 +707,7 @@ fn position_window(app: &AppHandle, logical_width: f64, logical_height: f64) -> 
 #[cfg(test)]
 mod position_tests {
     use super::{parse_config, window_position, NotificationPosition, NotifyConfig};
+    use std::path::PathBuf;
 
     #[test]
     fn missing_config_defaults_to_bottom_left() {
@@ -644,6 +716,7 @@ mod position_tests {
         assert_eq!(config.offset_left, 30);
         assert_eq!(config.offset_right, 30);
         assert_eq!(config.border_width, 1);
+        assert_eq!(config.sound_path, None);
     }
 
     #[test]
@@ -656,6 +729,15 @@ mod position_tests {
         assert_eq!(config.offset_left, 12);
         assert_eq!(config.offset_right, 18);
         assert_eq!(config.border_width, 2);
+    }
+
+    #[test]
+    fn config_parses_custom_sound_path() {
+        let config = parse_config(r#"{"soundPath":"C:\\sounds\\notify.mp3"}"#).unwrap();
+        assert_eq!(
+            config.sound_path,
+            Some(PathBuf::from(r"C:\sounds\notify.mp3"))
+        );
     }
 
     #[test]
@@ -721,8 +803,58 @@ fn hide_from_taskbar(_: &AppHandle) {}
 mod notification_sound_tests {
     use super::*;
 
+    fn bundled_samples() -> Vec<i16> {
+        NOTIFICATION_SOUND[44..]
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect()
+    }
+
     #[test]
     fn bundled_notification_sound_is_decodable() {
-        assert!(validate_notification_sound().is_ok());
+        assert!(validate_notification_sound(None).is_ok());
+    }
+
+    #[test]
+    fn bundled_notification_sound_is_soft_and_low() {
+        let samples = bundled_samples();
+        let peak = samples
+            .iter()
+            .map(|sample| sample.unsigned_abs())
+            .max()
+            .unwrap();
+        let zero_crossings = samples
+            .windows(2)
+            .filter(|pair| (pair[0] < 0 && pair[1] >= 0) || (pair[0] >= 0 && pair[1] < 0))
+            .count();
+        let duration_seconds = samples.len() as f32 / 44_100.0;
+        let average_frequency = zero_crossings as f32 / duration_seconds / 2.0;
+
+        assert!(peak <= 4_100, "peak amplitude is too loud: {peak}");
+        assert!(
+            average_frequency < 650.0,
+            "average frequency is too high: {average_frequency} Hz"
+        );
+    }
+
+    #[test]
+    fn custom_notification_sound_is_decodable() {
+        let path = Path::new(concat!(env!("OUT_DIR"), "/notification.wav"));
+        assert!(validate_notification_sound(Some(path)).is_ok());
+    }
+
+    #[test]
+    fn missing_custom_notification_sound_is_rejected() {
+        let path = std::env::temp_dir().join(format!(
+            "nonstop-notify-missing-{}-{}.wav",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        assert!(!path.exists());
+        let error = validate_notification_sound(Some(&path)).unwrap_err();
+        assert!(error.to_string().contains(&path.display().to_string()));
     }
 }
