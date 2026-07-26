@@ -173,11 +173,11 @@ function ToastDescription({ item }: { item: ToastItem }) {
       <span>{item.message || statusLabel(item.state)}</span>
       {(item.primaryRoute || item.secondaryRoute) ? (
         <div className="notify-actions">
-          {item.primaryRoute ? <button className="notify-action notify-action-primary" type="button" onClick={open(item.primaryRoute)}>{item.primaryLabel || 'Mở dashboard'}</button> : null}
-          {item.secondaryRoute ? <button className="notify-action notify-action-secondary" type="button" onClick={open(item.secondaryRoute)}>{item.secondaryLabel || 'Xem chi tiết'}</button> : null}
+          {item.primaryRoute ? <button className="notify-action notify-action-primary" type="button" onClick={open(item.primaryRoute)}>{item.primaryLabel || 'Open'}</button> : null}
+          {item.secondaryRoute ? <button className="notify-action notify-action-secondary" type="button" onClick={open(item.secondaryRoute)}>{item.secondaryLabel || 'Details'}</button> : null}
         </div>
       ) : null}
-      <button className="notify-close-button" type="button" aria-label="Đóng toast" onClick={close}>
+      <button className="notify-close-button" type="button" aria-label="Close notification" onClick={close}>
         <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
           <path d="M4.25 4.25 11.75 11.75M11.75 4.25 4.25 11.75" />
         </svg>
@@ -231,11 +231,11 @@ function isManualCloseOnly(item: ToastItem) {
 }
 
 function statusLabel(state: string) {
-  if (state === 'loading') return 'Đang chạy';
-  if (state === 'success') return 'Hoàn tất';
-  if (state === 'error') return 'Có lỗi';
-  if (state === 'warning') return 'Cảnh báo';
-  return 'Thông tin';
+  if (state === 'loading') return 'Running';
+  if (state === 'success') return 'Complete';
+  if (state === 'error') return 'Failed';
+  if (state === 'warning') return 'Warning';
+  return 'Information';
 }
 
 createRoot(document.getElementById('root')!).render(<App />);

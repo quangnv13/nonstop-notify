@@ -80,7 +80,7 @@ Use these metadata values when prompted:
 | Publisher | `quangnv13` |
 | PackageName | `Nonstop Notify` |
 | License | `MIT` |
-| ShortDescription | `Desktop notification companion for Nonstop test runs.` |
+| ShortDescription | `Desktop notification bridge for scripts, automation, and background services.` |
 | PackageUrl | `https://github.com/quangnv13/nonstop-notify` |
 | PublisherUrl | `https://github.com/quangnv13` |
 | ReleaseNotesUrl | `https://github.com/quangnv13/nonstop-notify/releases/tag/v0.1.0` |

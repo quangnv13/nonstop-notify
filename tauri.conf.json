@@ -21,7 +21,7 @@
     "homepage": "https://github.com/quangnv13/nonstop-notify",
     "icon": ["icons/icon.ico", "icons/128x128.png"],
     "license": "MIT",
-    "shortDescription": "Desktop notification companion for Nonstop test runs.",
+    "shortDescription": "Desktop notification bridge for scripts, automation, and background services.",
     "copyright": "Copyright (c) 2026 quangnv13",
     "windows": {
       "nsis": {

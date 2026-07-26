@@ -27,7 +27,7 @@ Add these fields below package version:
 
 ```toml
 authors = ["quangnv13"]
-description = "Desktop notification companion for Nonstop test runs."
+description = "Desktop notification bridge for scripts, automation, and background services."
 repository = "https://github.com/quangnv13/nonstop-notify"
 license = "MIT"
 ```

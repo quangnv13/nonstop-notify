@@ -3,7 +3,6 @@ use serde::Serialize;
 use std::time::Instant;
 
 const MAX_VISIBLE: usize = 5;
-const DASHBOARD_ROOT: &str = "http://127.0.0.1:4137/";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Toast {
@@ -92,6 +91,11 @@ impl Toast {
         let sticky = event.status == "loading";
         let primary_action = event.actions.first();
         let secondary_action = event.actions.get(1);
+        let primary_route = primary_action
+            .map(|action| action.route.clone())
+            .or_else(|| non_empty(event.primary_route.clone()))
+            .or_else(|| non_empty(event.route.clone()))
+            .unwrap_or_default();
         Self {
             id: event.toast_id,
             title: event.title,
@@ -103,11 +107,9 @@ impl Toast {
             primary_label: primary_action
                 .map(|action| action.label.clone())
                 .or_else(|| non_empty(event.primary_label.clone()))
-                .unwrap_or_else(|| "Mở dashboard".into()),
-            primary_route: primary_action
-                .map(|action| action.route.clone())
-                .or_else(|| non_empty(event.primary_route.clone()))
-                .unwrap_or_else(|| DASHBOARD_ROOT.into()),
+                .or_else(|| (!primary_route.is_empty()).then(|| "Open".into()))
+                .unwrap_or_default(),
+            primary_route,
             secondary_label: secondary_action
                 .map(|action| action.label.clone())
                 .or_else(|| non_empty(event.secondary_label.clone()))
@@ -271,12 +273,26 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_dashboard_action() {
+    fn event_without_routes_has_no_default_action() {
         let mut store = ToastStore::default();
         store.upsert(parse_event(r#"{"event":"test","toastId":"a"}"#).unwrap());
         let toast = &store.visible()[0];
-        assert_eq!(toast.primary_label, "Mở dashboard");
-        assert_eq!(toast.primary_route, "http://127.0.0.1:4137/");
+        assert_eq!(toast.primary_label, "");
+        assert_eq!(toast.primary_route, "");
+    }
+
+    #[test]
+    fn event_route_becomes_primary_action() {
+        let mut store = ToastStore::default();
+        store.upsert(
+            parse_event(
+                r#"{"event":"deploy.finished","toastId":"a","route":"https://example.com/deployments/42"}"#,
+            )
+            .unwrap(),
+        );
+        let toast = &store.visible()[0];
+        assert_eq!(toast.primary_label, "Open");
+        assert_eq!(toast.primary_route, "https://example.com/deployments/42");
     }
 
     #[test]
