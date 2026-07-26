@@ -88,7 +88,7 @@ include:
       target/release/bundle/appimage/*.AppImage
 ```
 
-Install Linux system packages only on Linux. Both matrix entries install Node.js 22, stable Rust, Rust cache, frontend dependencies, run `cargo test --locked`, build requested bundles with `tauri-apps/tauri-action@v1`, and upload artifacts for 14 days with missing-file failure.
+Install Linux system packages only on Linux. Both matrix entries install Node.js 22, stable Rust, Rust cache, frontend dependencies, build `ui-react/dist`, run `cargo test --locked`, build requested bundles with `tauri-apps/tauri-action@v1`, and upload artifacts for 14 days with missing-file failure.
 
 - [ ] **Step 4: Add tag-only release job**
 
@@ -115,6 +115,7 @@ Run:
 
 ```powershell
 npm.cmd --prefix ui-react ci --ignore-scripts
+npm.cmd --prefix ui-react run build
 cargo test --locked
 cargo tauri build --bundles nsis
 ```
@@ -131,6 +132,7 @@ Copy repository to Linux filesystem or build from mounted source after ensuring 
 
 ```bash
 npm ci --prefix ui-react --ignore-scripts
+npm --prefix ui-react run build
 cargo test --locked
 cargo tauri build --bundles deb,appimage
 ```

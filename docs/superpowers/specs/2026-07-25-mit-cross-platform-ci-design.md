@@ -64,6 +64,7 @@ Both jobs:
 - Install stable Rust.
 - Cache Rust build dependencies.
 - Run `npm ci --prefix ui-react`.
+- Run `npm --prefix ui-react run build` before compiling Rust.
 - Run `cargo test --locked`.
 - Build platform bundles with official `tauri-apps/tauri-action@v1`, avoiding a repeated global CLI compilation on each runner.
 - Upload platform artifacts for 14 days and fail if no bundle exists.
@@ -89,6 +90,7 @@ Both jobs:
 
 - MIT text and Cargo metadata agree.
 - `npm ci --prefix ui-react` succeeds from clean dependency state.
+- `npm --prefix ui-react run build` creates `ui-react/dist` before Rust compilation.
 - `cargo test --locked` succeeds on Windows locally.
 - Windows NSIS build succeeds locally.
 - Workflow YAML parses and passes `actionlint` when available.
