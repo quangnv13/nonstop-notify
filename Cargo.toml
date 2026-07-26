@@ -1,6 +1,6 @@
 [package]
 name = "nonstop-notify"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["quangnv13"]
 description = "Desktop notification bridge for scripts, automation, and background services."
 repository = "https://github.com/quangnv13/nonstop-notify"

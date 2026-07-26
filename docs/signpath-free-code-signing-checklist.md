@@ -20,9 +20,8 @@ The project has a public MIT-licensed repository, current documentation, a code-
 
 Main blockers before applying:
 
-1. Publish an initial release in the same installer form that will later be signed.
-2. Confirm GitHub multi-factor authentication for every project member.
-3. Build verifiable public project reputation; a new project with no public release may still be rejected.
+1. Confirm GitHub multi-factor authentication for every project member.
+2. Continue building verifiable public project reputation; SignPath Foundation makes the final discretionary decision.
 
 ## Eligibility Checklist
 
@@ -32,7 +31,7 @@ Main blockers before applying:
 | 2 | Every component uses an OSI-approved Open Source license without commercial dual licensing. | **PASS** | `node scripts/check-licenses.mjs` audited 459 Rust and 75 npm dependencies with 0 issues. CI runs the same consolidated license audit. |
 | 3 | No proprietary code or proprietary bundled component. | **PASS** | The unlicensed audio asset was removed. `build.rs` now generates the bundled WAV deterministically from project source, and the consolidated dependency audit reports 0 issues. |
 | 4 | Project is actively maintained. | **PASS** | Recent commits and successful GitHub Actions runs exist on `master`. |
-| 5 | Project is already released in the form to be signed. | **FAIL** | GitHub currently has no version tags and no Releases. Publish the NSIS `.exe` through a `v*` tag before applying. |
+| 5 | Project is already released in the form to be signed. | **PASS** | Public Release `v0.1.0` contains the NSIS `.exe` installer form intended for future signing, plus DEB and AppImage packages. |
 | 6 | Functionality is documented on the project/download page. | **PASS** | `README.md` documents purpose, commands, event schema, configuration, installation, privacy, and release flow. |
 | 7 | Team signs only projects it develops and maintains. | **PASS** | Repository and build scripts are owned and maintained by `quangnv13`. |
 | 8 | Team signs only binaries built from its own source. | **PASS** | GitHub Actions builds the repository's Rust, React, and packaging source directly. No upstream binary is submitted for signing. |
@@ -44,14 +43,14 @@ Main blockers before applying:
 | 14 | Authors, reviewers, and signing approvers are assigned. | **PASS** | `README.md` lists `quangnv13` as committer/reviewer and approver. |
 | 15 | Home page contains a **Code Signing Policy** heading or link. | **PASS** | `README.md` has a `Code Signing Policy` section and the exact SignPath attribution statement. |
 | 16 | Policy identifies roles and includes a privacy policy or required privacy statement. | **PASS** | `README.md` names the roles and contains the required no-network-transfer statement with the user-request exception. |
-| 17 | Download/release pages reference the code-signing policy. | **PARTIAL** | No Release exists yet. The tag release workflow will automatically prepend the README `Code Signing Policy` link to generated release notes; verify it on the first actual Release. |
-| 18 | Product name and version metadata are consistent in signed files. | **PASS** | Tauri product name is `Nonstop Notify`; `Cargo.toml` and `tauri.conf.json` both use version `0.1.0`. SignPath artifact restrictions still need configuration after approval. |
-| 19 | Binary artifact is built from source in a verifiable automated build. | **PASS** | Workflow uses GitHub-hosted `windows-latest` and `ubuntu-22.04` jobs. Build run [`30196273129`](https://github.com/quangnv13/nonstop-notify/actions/runs/30196273129) completed successfully for both platforms. |
+| 17 | Download/release pages reference the code-signing policy. | **PASS** | Release `v0.1.0` begins with a link to the README `Code Signing Policy`; the workflow adds the same link to later release notes. |
+| 18 | Product name and version metadata are consistent in signed files. | **PASS** | Tauri product name is `Nonstop Notify`; `Cargo.toml` and `tauri.conf.json` both use version `0.1.1`. SignPath artifact restrictions still need configuration after approval. |
+| 19 | Binary artifact is built from source in a verifiable automated build. | **PASS** | GitHub-hosted Windows and Linux jobs plus the release job passed in workflow run `30209450143`. |
 | 20 | Unsigned artifact is stored as a GitHub workflow artifact before signing submission. | **PASS** | Build matrix uses `actions/upload-artifact@v4` with a step `id`, exposing `artifact-id` before any future SignPath submission. The future submit action can consume that output after SignPath configuration exists. |
 | 21 | Every release receives manual approval before signing. | **POST-APPROVAL** | Configure SignPath signing policy and approver after acceptance. Current workflow performs no signing request. |
 | 22 | SignPath GitHub App, project, artifact configuration, and submitter token are configured. | **POST-APPROVAL** | No SignPath GitHub action or `.signpath` policy exists yet. Add these only after organization/project identifiers are issued. |
 | 23 | Project accepts SignPath technical constraints and assists with policy investigations. | **PARTIAL** | This checklist records the obligation. It becomes operational when the project applies and accepts the service terms. |
-| 24 | Project has sufficient verifiable reputation. | **PARTIAL** | Repository is new and has no public release. SignPath Foundation makes the final discretionary reputation decision. |
+| 24 | Project has sufficient verifiable reputation. | **PARTIAL** | The repository now has public releases and successful public builds, but remains new. SignPath Foundation makes the final discretionary reputation decision. |
 
 ## Why `Create GitHub Release` Was Skipped
 
@@ -71,9 +70,9 @@ The condition is false for a normal branch push, so GitHub correctly marks `Crea
 
 Do not remove this condition. Creating a GitHub Release for every commit to `master` would publish unstable builds as releases.
 
-## Create the First Release
+## Initial Release Evidence
 
-Complete release validation first, then create and push an annotated version tag:
+The first public release was created from an annotated version tag:
 
 ```powershell
 git status --short
@@ -81,7 +80,7 @@ git tag -a v0.1.0 -m "Nonstop Notify v0.1.0"
 git push origin v0.1.0
 ```
 
-The tag push matches `v*`, causing the workflow to:
+The tag push matched `v*`, causing the workflow to:
 
 1. Build and test Windows and Linux packages again from the tagged commit.
 2. Upload NSIS, DEB, and AppImage artifacts.
@@ -116,8 +115,4 @@ Before applying to SignPath, verify:
 
 ## Next Audit
 
-Re-run this checklist after the first `v0.1.0` release. Expected status changes:
-
-- Condition 5: **FAIL** to **PASS**.
-- Condition 17: **PARTIAL** to **PASS** after verifying the workflow-added policy link on the actual Release.
-- Condition 24: remains discretionary, but gains public release evidence.
+Re-run this checklist after SignPath responds to the application. Conditions 13, 21, 22, 23, and 24 require account confirmation, acceptance, or SignPath-side configuration.

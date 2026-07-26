@@ -203,15 +203,15 @@ nonstop-notify --self-check
 AppImage is portable and does not install itself or update `PATH`:
 
 ```bash
-chmod +x ./Nonstop.Notify_0.1.0_amd64.AppImage
-./Nonstop.Notify_0.1.0_amd64.AppImage --self-check
+chmod +x ./Nonstop.Notify_0.1.1_amd64.AppImage
+./Nonstop.Notify_0.1.1_amd64.AppImage --self-check
 ```
 
 Create a stable CLI command when `~/.local/bin` is on `PATH`:
 
 ```bash
 mkdir -p ~/.local/bin
-ln -s "$PWD/Nonstop.Notify_0.1.0_amd64.AppImage" ~/.local/bin/nonstop-notify
+ln -s "$PWD/Nonstop.Notify_0.1.1_amd64.AppImage" ~/.local/bin/nonstop-notify
 nonstop-notify --self-check
 ```
 
