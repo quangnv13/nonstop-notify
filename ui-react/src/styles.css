@@ -33,8 +33,13 @@
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; width: 100%; height: 100%; overflow: hidden; background: rgba(0, 0, 0, 0) !important; }
 .sonner-hitbox { position: fixed; inset: 0; background: transparent !important; box-shadow: none !important; pointer-events: auto; }
-[data-sonner-toaster] { background: transparent !important; box-shadow: none !important; pointer-events: auto !important; right: 0 !important; top: 0 !important; }
+[data-sonner-toaster] { background: transparent !important; box-shadow: none !important; pointer-events: none !important; }
+[data-sonner-toaster][data-y-position="top"] { top: 0 !important; }
+[data-sonner-toaster][data-y-position="bottom"] { bottom: 0 !important; }
+[data-sonner-toaster][data-x-position="left"] { left: 0 !important; }
+[data-sonner-toaster][data-x-position="right"] { right: 0 !important; }
 [data-sonner-toast] {
+  pointer-events: auto !important;
   font-family: "Segoe UI", Arial, Helvetica, sans-serif !important;
   border: var(--notify-border-width, 1px) solid var(--notify-border-color) !important;
   border-radius: 14px !important;
@@ -42,8 +47,12 @@ html, body, #root { margin: 0; width: 100%; height: 100%; overflow: hidden; back
   backdrop-filter: none !important;
   color-scheme: light dark !important;
   transition: transform 160ms ease-out, opacity 160ms ease-out, height 160ms ease-out, box-shadow 120ms ease-out !important;
-  transform-origin: top right !important;
 }
+[data-sonner-toast][data-expanded="false"][data-front="false"] { pointer-events: none !important; }
+[data-sonner-toast][data-y-position="top"][data-x-position="left"] { transform-origin: top left !important; }
+[data-sonner-toast][data-y-position="top"][data-x-position="right"] { transform-origin: top right !important; }
+[data-sonner-toast][data-y-position="bottom"][data-x-position="left"] { transform-origin: bottom left !important; }
+[data-sonner-toast][data-y-position="bottom"][data-x-position="right"] { transform-origin: bottom right !important; }
 [data-sonner-toast] > * { transition: opacity 120ms ease-out !important; }
 [data-sonner-toast][data-styled="true"] { width: 400px !important; }
 .notify-sonner-toast { overflow: visible !important; padding-right: 44px !important; }

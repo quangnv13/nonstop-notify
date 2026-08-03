@@ -26,6 +26,7 @@ It was originally built for the Nonstop test platform, but the event format and 
 - Displays up to five notifications with compact hover expansion.
 - Follows the Windows light or dark app theme and uses the light theme on other platforms.
 - Supports configurable screen position, offsets, and border width.
+- Supports explicit custom sounds and a runtime `notify-ring.mp3` override beside the executable.
 - Opens safe relative dashboard routes or absolute HTTP(S) URLs.
 
 ## Quick Start
@@ -159,9 +160,9 @@ Copy `nonstop-notify.config.example.json` and adjust it:
 
 Supported positions: `top-left`, `top-right`, `bottom-left`, and `bottom-right`.
 
-`soundPath` is optional. When omitted or `null`, Windows uses the native system notification sound. Other platforms play a short deterministic WAV generated during the Rust build. Set `soundPath` to a local WAV, MP3, FLAC, or OGG/Vorbis file to use a custom notification sound.
+`soundPath` is optional and takes precedence when set. When omitted or `null`, the daemon first checks for a decodable `notify-ring.mp3` beside the executable. If that runtime override is missing or invalid, Windows uses the native system notification sound and other platforms play a short deterministic WAV generated during the Rust build.
 
-`--self-check` fails when a custom sound cannot be read or decoded. Runtime sound failures do not discard notifications; set `NONSTOP_NOTIFY_DEBUG=1` to log them.
+`--self-check` fails when an explicit `soundPath` cannot be read or decoded. A missing or invalid adjacent `notify-ring.mp3` falls back to the default sound without discarding notifications; set `NONSTOP_NOTIFY_DEBUG=1` to log the fallback.
 
 ```powershell
 .\nonstop-notify.exe emit --stdin --config .\nonstop-notify.config.json
@@ -203,15 +204,15 @@ nonstop-notify --self-check
 AppImage is portable and does not install itself or update `PATH`:
 
 ```bash
-chmod +x ./Nonstop.Notify_0.1.1_amd64.AppImage
-./Nonstop.Notify_0.1.1_amd64.AppImage --self-check
+chmod +x ./Nonstop.Notify_0.1.2_amd64.AppImage
+./Nonstop.Notify_0.1.2_amd64.AppImage --self-check
 ```
 
 Create a stable CLI command when `~/.local/bin` is on `PATH`:
 
 ```bash
 mkdir -p ~/.local/bin
-ln -s "$PWD/Nonstop.Notify_0.1.1_amd64.AppImage" ~/.local/bin/nonstop-notify
+ln -s "$PWD/Nonstop.Notify_0.1.2_amd64.AppImage" ~/.local/bin/nonstop-notify
 nonstop-notify --self-check
 ```
 

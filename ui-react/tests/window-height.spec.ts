@@ -183,6 +183,98 @@ test('pre-grows when cursor waits in transparent edge before entering toast', as
   expect(pointerEventHeight).toBeGreaterThanOrEqual(minimumExpandedHeight);
 });
 
+test('transparent wrapper edge does not request expanded height', async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 190 });
+  await page.mouse.move(500, 800);
+  await page.evaluate((items) => window.__NONSTOP_SET_TOASTS?.({
+    toasts: items,
+    expanded: false,
+    position: 'bottom-left',
+  }), toasts);
+  await expect(page.locator('[data-sonner-toast]')).toHaveCount(5);
+  await page.waitForTimeout(300);
+  const minimumExpandedHeight = await expandedLayoutHeight(page);
+  await clearLayoutReports(page);
+
+  await page.mouse.move(425, 140);
+  await page.waitForTimeout(100);
+
+  const edgeReports = await page.evaluate(() => (
+    window as unknown as { __layoutReports: Array<{ height: number }> }
+  ).__layoutReports.map((report) => report.height));
+  expect(edgeReports.every((height) => height < minimumExpandedHeight)).toBe(true);
+});
+
+test('collapsed rear toast invisible area never triggers expansion', async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 190 });
+  await page.mouse.move(500, 800);
+  await page.evaluate((items) => window.__NONSTOP_SET_TOASTS?.({
+    toasts: items,
+    expanded: false,
+    position: 'bottom-left',
+  }), toasts);
+  await expect(page.locator('[data-sonner-toast]')).toHaveCount(5);
+  await page.waitForTimeout(300);
+
+  const point = await page.evaluate(() => {
+    const front = document.querySelector<HTMLElement>('[data-sonner-toast][data-front="true"]')!;
+    const frontRect = front.getBoundingClientRect();
+    const rearToasts = [...document.querySelectorAll<HTMLElement>('[data-sonner-toast][data-front="false"]')];
+    for (const rear of rearToasts) {
+      const rect = rear.getBoundingClientRect();
+      const top = Math.max(0, rect.top + 2);
+      const bottom = Math.min(window.innerHeight - 1, rect.bottom - 2, frontRect.top - 2);
+      if (bottom > top) return { x: Math.round((rect.left + rect.right) / 2), y: Math.round((top + bottom) / 2) };
+    }
+    return null;
+  });
+  if (!point) throw new Error('No invisible rear-toast point found');
+  await clearLayoutReports(page);
+
+  await page.mouse.move(point.x, point.y);
+  await page.waitForTimeout(350);
+
+  const state = await page.evaluate(() => ({
+    expanded: document.querySelector<HTMLElement>('[data-sonner-toast][data-front="true"]')?.dataset.expanded,
+    reports: (window as unknown as { __layoutReports: Array<{ height: number }> }).__layoutReports,
+  }));
+  expect(state.expanded).toBe('false');
+  expect(state.reports).toEqual([]);
+});
+
+test('single bottom toast with five lines converges without clipping', async ({ page }) => {
+  const longToast = {
+    ...toasts[0],
+    id: 'toast-bottom-five-lines',
+    title: 'Thông báo nội dung dài cần hiển thị đầy đủ',
+    message: 'Dòng thứ nhất.\nDòng thứ hai.\nDòng thứ ba.\nDòng thứ tư.\nDòng thứ năm.',
+  };
+  await page.setViewportSize({ width: 430, height: 150 });
+  await page.evaluate((item) => window.__NONSTOP_SET_TOASTS?.({
+    toasts: [item],
+    expanded: false,
+    position: 'bottom-left',
+  }), longToast);
+  await expect(page.locator('[data-sonner-toast]')).toHaveCount(1);
+
+  const appliedHeights = await applyNativeResizeFeedback(page, 700);
+  const layout = await page.evaluate((bottomPadding) => {
+    const toast = document.querySelector<HTMLElement>('[data-sonner-toast]')!;
+    const title = toast.querySelector<HTMLElement>('[data-title]')!;
+    const message = toast.querySelector<HTMLElement>('.notify-message')!;
+    return {
+      requiredHeight: Math.ceil(toast.scrollHeight + bottomPadding),
+      titleTop: title.getBoundingClientRect().top,
+      messageTop: message.getBoundingClientRect().top,
+    };
+  }, toasterBottomPadding);
+
+  expect(appliedHeights.length).toBeGreaterThan(0);
+  expect(appliedHeights.every((height) => height >= layout.requiredHeight)).toBe(true);
+  expect(layout.titleTop).toBeGreaterThanOrEqual(0);
+  expect(layout.messageTop).toBeGreaterThanOrEqual(0);
+});
+
 test('native resize feedback never applies intermediate transition heights', async ({ page }) => {
   const feedbackToasts = toasts.map((item, index) => ({
     ...item,
@@ -207,7 +299,7 @@ test('native resize feedback never applies intermediate transition heights', asy
     const action = toast.querySelector<HTMLElement>('.notify-action-primary');
     return {
       height: toast.getBoundingClientRect().height,
-      initialHeight: Number.parseFloat(getComputedStyle(toast).getPropertyValue('--initial-height')),
+      initialHeight: Number.parseFloat(getComputedStyle(toast).getPropertyValue('--initial-height')) || toast.offsetHeight,
       actionHeight: action?.getBoundingClientRect().height ?? 0,
     };
   }));
@@ -222,6 +314,165 @@ test('native resize feedback never applies intermediate transition heights', asy
   expect(collapsedHeight).toBeGreaterThan(0);
   expect(collapsedHeight).toBeLessThan(minimumExpandedHeight / 2);
   expect(new Set(collapseReports).size).toBe(1);
+});
+
+test('bottom collapsed layout reports visual stack height instead of viewport height', async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 645 });
+  await clearLayoutReports(page);
+  await page.evaluate((items) => window.__NONSTOP_SET_TOASTS?.({
+    toasts: items,
+    expanded: false,
+    position: 'bottom-left',
+  }), toasts);
+  await expect(page.locator('[data-sonner-toast]')).toHaveCount(5);
+  await page.waitForTimeout(300);
+
+  const layout = await page.evaluate((bottomPadding) => {
+    const rects = [...document.querySelectorAll<HTMLElement>('[data-sonner-toast]')]
+      .map((element) => element.getBoundingClientRect());
+    const reports = (window as unknown as { __layoutReports: Array<{ height: number }> }).__layoutReports;
+    return {
+      visualHeight: Math.ceil(Math.max(...rects.map((rect) => rect.bottom)) - Math.min(...rects.map((rect) => rect.top)) + bottomPadding),
+      reportedHeight: reports.at(-1)?.height ?? 0,
+      viewportHeight: window.innerHeight,
+    };
+  }, toasterBottomPadding);
+
+  expect(Math.abs(layout.reportedHeight - layout.visualHeight)).toBeLessThanOrEqual(2);
+  expect(layout.reportedHeight).toBeLessThan(layout.viewportHeight / 2);
+
+  const feedbackReports = await applyNativeResizeFeedback(page, 500);
+  expect(feedbackReports).toEqual([layout.reportedHeight]);
+});
+
+test('bottom position anchors front toast and expands older toasts upward', async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 190 });
+  await page.evaluate((items) => window.__NONSTOP_SET_TOASTS?.({
+    toasts: items,
+    expanded: false,
+    position: 'bottom-right',
+  }), toasts);
+  await expect(page.locator('[data-sonner-toast]')).toHaveCount(5);
+  await expect(page.locator('[data-sonner-toaster]')).toHaveAttribute('data-y-position', 'bottom');
+  await expect(page.locator('[data-sonner-toaster]')).toHaveAttribute('data-x-position', 'right');
+  await page.waitForTimeout(300);
+
+  const beforeBottomGap = await page.evaluate(() => {
+    const front = document.querySelector<HTMLElement>('[data-sonner-toast][data-front="true"]')!;
+    return window.innerHeight - front.getBoundingClientRect().bottom;
+  });
+  const frontToast = page.locator('[data-sonner-toast][data-front="true"]');
+  await frontToast.hover();
+  await expect(frontToast).toHaveAttribute('data-expanded', 'true');
+  const expandedHeight = await page.evaluate(() => (
+    (window as unknown as { __layoutReports: Array<{ height: number }> }).__layoutReports.at(-1)?.height ?? 0
+  ));
+  expect(expandedHeight).toBeGreaterThan(190);
+  await page.setViewportSize({ width: 430, height: expandedHeight });
+  await frontToast.hover();
+  await expect(frontToast).toHaveAttribute('data-expanded', 'true');
+  await page.waitForTimeout(250);
+
+  const expandedLayout = await page.evaluate(() => {
+    const front = document.querySelector<HTMLElement>('[data-sonner-toast][data-front="true"]')!;
+    const frontRect = front.getBoundingClientRect();
+    const olderRects = [...document.querySelectorAll<HTMLElement>('[data-sonner-toast][data-front="false"]')]
+      .map((element) => element.getBoundingClientRect());
+    return {
+      bottomGap: window.innerHeight - frontRect.bottom,
+      olderToastBottoms: olderRects.map((rect) => rect.bottom),
+      frontTop: frontRect.top,
+    };
+  });
+
+  expect(Math.abs(expandedLayout.bottomGap - beforeBottomGap)).toBeLessThanOrEqual(1);
+  expect(expandedLayout.olderToastBottoms.length).toBeGreaterThan(0);
+  expect(expandedLayout.olderToastBottoms.every((bottom) => bottom <= expandedLayout.frontTop + 1)).toBe(true);
+});
+
+test('new bottom toast payload keeps hovered stack expanded at full height', async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 190 });
+  await page.evaluate((item) => window.__NONSTOP_SET_TOASTS?.({
+    toasts: [item],
+    expanded: false,
+    position: 'bottom-left',
+  }), toasts[0]);
+  await expect(page.locator('[data-sonner-toast]')).toHaveCount(1);
+  const frontToast = page.locator('[data-sonner-toast][data-front="true"]');
+  await frontToast.hover();
+  await expect(frontToast).toHaveAttribute('data-expanded', 'true');
+
+  const firstExpandedHeight = await expandedLayoutHeight(page);
+  await page.setViewportSize({ width: 430, height: firstExpandedHeight });
+  await frontToast.hover();
+  await page.evaluate(() => {
+    const transitions: Array<{ id: string; oldValue: string | null }> = [];
+    const observer = new MutationObserver((records) => {
+      records.forEach((record) => {
+        const toast = record.target as HTMLElement;
+        transitions.push({ id: toast.dataset.sonnerToast ?? '', oldValue: record.oldValue });
+      });
+    });
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['data-expanded'],
+      attributeOldValue: true,
+      subtree: true,
+    });
+    Object.assign(window, { __expandedTransitions: transitions, __expandedObserver: observer });
+  });
+  await clearLayoutReports(page);
+  await page.evaluate((items) => window.__NONSTOP_SET_TOASTS?.({
+    toasts: items,
+    expanded: false,
+    position: 'bottom-left',
+  }), toasts.slice(0, 2));
+  await page.waitForTimeout(20);
+  await expect(page.locator('[data-sonner-toast]')).toHaveCount(2);
+  const promptMinimumHeight = await expandedLayoutHeight(page);
+  const promptReportedHeight = await page.evaluate(() => (
+    (window as unknown as { __layoutReports: Array<{ height: number }> }).__layoutReports.at(-1)?.height ?? 0
+  ));
+  expect(promptReportedHeight).toBeGreaterThanOrEqual(promptMinimumHeight);
+  const currentFront = page.locator('[data-sonner-toast][data-front="true"]');
+  await expect(currentFront).toHaveAttribute('data-expanded', 'true');
+  await page.waitForTimeout(250);
+  const expandedTransitions = await page.evaluate(() => {
+    const state = window as unknown as {
+      __expandedTransitions: Array<{ id: string; oldValue: string | null }>;
+      __expandedObserver: MutationObserver;
+    };
+    state.__expandedObserver.disconnect();
+    return state.__expandedTransitions;
+  });
+  expect(expandedTransitions.some(({ oldValue }) => oldValue === 'true')).toBe(false);
+
+  const minimumExpandedHeight = await expandedLayoutHeight(page);
+  const reports = await applyNativeResizeFeedback(page, 500);
+  expect(reports.length).toBeGreaterThan(0);
+  expect(reports.every((height) => height >= minimumExpandedHeight)).toBe(true);
+});
+
+test('spurious pointerleave during native resize keeps hovered bottom stack expanded', async ({ page }) => {
+  await page.setViewportSize({ width: 430, height: 190 });
+  await page.evaluate((items) => window.__NONSTOP_SET_TOASTS?.({
+    toasts: items,
+    expanded: false,
+    position: 'bottom-left',
+  }), toasts);
+  await expect(page.locator('[data-sonner-toast]')).toHaveCount(5);
+  const frontToast = page.locator('[data-sonner-toast][data-front="true"]');
+  await frontToast.hover();
+  await expect(frontToast).toHaveAttribute('data-expanded', 'true');
+
+  await page.locator('.sonner-hitbox').dispatchEvent('pointerout', { relatedTarget: null });
+  await page.waitForTimeout(350);
+  await expect(frontToast).toHaveAttribute('data-expanded', 'true');
+
+  await page.mouse.move(429, 0);
+  await page.locator('.sonner-hitbox').dispatchEvent('pointerout', { relatedTarget: null });
+  await page.waitForTimeout(350);
+  await expect(frontToast).toHaveAttribute('data-expanded', 'false');
 });
 
 async function expandedLayoutHeight(page: import('@playwright/test').Page) {

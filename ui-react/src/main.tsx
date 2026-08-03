@@ -17,7 +17,14 @@ type ToastItem = {
   sticky: boolean;
 };
 
-type ToastPayload = { toasts: ToastItem[]; expanded: boolean; theme?: 'light' | 'dark'; borderWidth: number };
+type NotificationPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
+type ToastPayload = {
+  toasts: ToastItem[];
+  expanded: boolean;
+  theme?: 'light' | 'dark';
+  position?: NotificationPosition;
+  borderWidth?: number;
+};
 const TOASTER_BOTTOM_PADDING = 24;
 const TOAST_TRANSITION_MS = 160;
 const LAYOUT_SETTLE_DELAY_MS = TOAST_TRANSITION_MS + 40;
@@ -33,8 +40,11 @@ function invoke(cmd: string, args?: Record<string, unknown>) {
 function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [borderWidth, setBorderWidth] = useState(1);
+  const [position, setPosition] = useState<NotificationPosition>('top-right');
+  const [forceExpanded, setForceExpanded] = useState(false);
   const heightTimer = React.useRef<number | null>(null);
   const collapseTimer = React.useRef<number | null>(null);
+  const hoverLeaveTimer = React.useRef<number | null>(null);
   const visibleToasts = React.useRef<ToastItem[]>([]);
   const expandedHeight = React.useRef(0);
   const hovering = React.useRef(false);
@@ -78,11 +88,16 @@ function App() {
   };
 
   const setExpanded = (next: boolean) => {
+    if (next && hoverLeaveTimer.current) {
+      window.clearTimeout(hoverLeaveTimer.current);
+      hoverLeaveTimer.current = null;
+    }
     if (hovering.current === next) {
       const toasterExpanded = document.querySelector<HTMLElement>('[data-sonner-toast][data-front="true"]')?.dataset.expanded === 'true';
       if (!next || toasterExpanded) return;
     }
     hovering.current = next;
+    setForceExpanded(next);
     if (collapseTimer.current) {
       window.clearTimeout(collapseTimer.current);
       collapseTimer.current = null;
@@ -100,17 +115,43 @@ function App() {
     }, 350);
   };
 
+  const scheduleCollapse = () => {
+    if (hoverLeaveTimer.current) window.clearTimeout(hoverLeaveTimer.current);
+    hoverLeaveTimer.current = window.setTimeout(() => {
+      hoverLeaveTimer.current = null;
+      if (document.querySelector('[data-sonner-toast][data-front="true"]:hover')) return;
+      setExpanded(false);
+    }, 300);
+  };
+
   useEffect(() => {
     window.__NONSTOP_SET_TOASTS = (payload) => {
       const visible = payload.toasts.slice(0, 5);
+      const keepExpanded = hovering.current && visible.length > 0;
       visibleToasts.current = visible;
       setTheme(payload.theme === 'dark' ? 'dark' : 'light');
-      setBorderWidth(payload.borderWidth);
-      expandedHeight.current = 0;
-      lastReportedHeight.current = 0;
-      layoutPhase.current = 'idle';
+      setBorderWidth(payload.borderWidth ?? 1);
+      setPosition(payload.position ?? 'top-right');
+      if (!keepExpanded) {
+        setForceExpanded(false);
+        hovering.current = false;
+        expandedHeight.current = 0;
+        layoutPhase.current = 'idle';
+      }
+      if (!visible.length) lastReportedHeight.current = 0;
       visible.forEach(showToast);
-      scheduleMeasuredWindowHeight();
+      if (keepExpanded) {
+        layoutPhase.current = 'expanding';
+        if (heightTimer.current) window.clearTimeout(heightTimer.current);
+        heightTimer.current = window.setTimeout(() => {
+          const targetHeight = measureExpandedToasterHeight();
+          if (targetHeight) expandedHeight.current = targetHeight;
+          reportWindowHeight(targetHeight);
+          scheduleSettledWindowHeight('expanding');
+        }, 0);
+      } else {
+        scheduleMeasuredWindowHeight();
+      }
     };
     invoke('request_state');
     return () => { delete window.__NONSTOP_SET_TOASTS; };
@@ -124,7 +165,7 @@ function App() {
     };
     const resizeObserver = new ResizeObserver(syncLayout);
     const observeToasts = () => {
-      document.querySelectorAll<HTMLElement>('[data-sonner-toast]').forEach((element) => resizeObserver.observe(element));
+      document.querySelectorAll<HTMLElement>('[data-sonner-toast], .notify-body').forEach((element) => resizeObserver.observe(element));
     };
     const mutationObserver = new MutationObserver(() => {
       observeToasts();
@@ -141,11 +182,12 @@ function App() {
   useEffect(() => () => {
     if (heightTimer.current) window.clearTimeout(heightTimer.current);
     if (collapseTimer.current) window.clearTimeout(collapseTimer.current);
+    if (hoverLeaveTimer.current) window.clearTimeout(hoverLeaveTimer.current);
   }, []);
 
   return (
-    <div className="sonner-hitbox" data-theme={theme} style={{ '--notify-border-width': `${borderWidth}px` } as React.CSSProperties} onPointerOverCapture={() => setExpanded(true)} onPointerLeave={() => setExpanded(false)}>
-      <Toaster theme={theme} position="top-right" visibleToasts={5} richColors gap={10} offset={0} closeButton={false} toastOptions={{ className: 'notify-sonner-toast' }} />
+    <div className="sonner-hitbox" data-theme={theme} style={{ '--notify-border-width': `${borderWidth}px` } as React.CSSProperties} onPointerOverCapture={(event) => (event.target as Element).closest('[data-sonner-toast][data-front="true"]') && setExpanded(true)} onPointerLeave={scheduleCollapse}>
+      <Toaster theme={theme} expand={forceExpanded} position={position} visibleToasts={5} richColors gap={10} offset={0} closeButton={false} toastOptions={{ className: 'notify-sonner-toast' }} />
     </div>
   );
 }
@@ -201,24 +243,39 @@ function showToast(item: ToastItem) {
   else toast(item.title || item.id, options);
 }
 
+function measureToastIntrinsicHeight(element: HTMLElement) {
+  const initialHeight = Number.parseFloat(getComputedStyle(element).getPropertyValue('--initial-height')) || 0;
+  return Math.max(initialHeight, element.offsetHeight, element.scrollHeight);
+}
+
 function measureExpandedToasterHeight() {
   const toastHeights = [...document.querySelectorAll<HTMLElement>('[data-sonner-toast]')]
-    .map((element) => Number.parseFloat(getComputedStyle(element).getPropertyValue('--initial-height')) || element.offsetHeight);
+    .map(measureToastIntrinsicHeight);
   return toastHeights.length
     ? Math.min(760, Math.ceil(toastHeights.reduce((total, toastHeight) => total + toastHeight, 0) + (toastHeights.length - 1) * 10 + TOASTER_BOTTOM_PADDING))
     : 0;
 }
 
 function measureToasterHeight() {
-  const bottoms = [...document.querySelectorAll<HTMLElement>('[data-sonner-toast]')]
-    .map((element) => {
-      const toastBottom = element.getBoundingClientRect().bottom;
-      if (element.dataset.front !== 'true') return toastBottom;
-      const contentBottom = element.querySelector<HTMLElement>('.notify-body')?.getBoundingClientRect().bottom ?? 0;
-      const intrinsicHeight = Number.parseFloat(getComputedStyle(element).getPropertyValue('--initial-height')) || element.offsetHeight;
-      return Math.max(toastBottom, contentBottom, element.offsetTop + intrinsicHeight);
+  const elements = [...document.querySelectorAll<HTMLElement>('[data-sonner-toast]')];
+  if (!elements.length) return 0;
+  if (elements[0].dataset.yPosition === 'bottom') {
+    const tops = elements.map((element) => {
+      const toastRect = element.getBoundingClientRect();
+      if (element.dataset.front !== 'true') return toastRect.top;
+      const intrinsicHeight = measureToastIntrinsicHeight(element);
+      return Math.min(toastRect.top, window.innerHeight - intrinsicHeight);
     });
-  return bottoms.length ? Math.ceil(Math.max(...bottoms) + TOASTER_BOTTOM_PADDING) : 0;
+    return Math.ceil(window.innerHeight - Math.min(...tops) + TOASTER_BOTTOM_PADDING);
+  }
+  const bottoms = elements.map((element) => {
+    const toastBottom = element.getBoundingClientRect().bottom;
+    if (element.dataset.front !== 'true') return toastBottom;
+    const contentBottom = element.querySelector<HTMLElement>('.notify-body')?.getBoundingClientRect().bottom ?? 0;
+    const intrinsicHeight = measureToastIntrinsicHeight(element);
+    return Math.max(toastBottom, contentBottom, element.offsetTop + intrinsicHeight);
+  });
+  return Math.ceil(Math.max(...bottoms) + TOASTER_BOTTOM_PADDING);
 }
 
 function toastDurationMs(item: ToastItem) {

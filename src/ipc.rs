@@ -1,10 +1,24 @@
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
+use fs2::FileExt;
 use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions};
 
 const SOCKET_NAME: &str = "nonstop-notify.sock";
+
+fn finish_queue_operation<T>(
+    result: io::Result<T>,
+    unlock_result: io::Result<()>,
+) -> io::Result<T> {
+    match result {
+        Ok(value) => unlock_result.map(|_| value),
+        Err(error) => {
+            let _ = unlock_result;
+            Err(error)
+        }
+    }
+}
 
 pub fn listen_events<F>(mut on_event: F) -> io::Result<()>
 where
@@ -57,25 +71,125 @@ pub fn append_event_json(input: &str) -> io::Result<()> {
     use std::fs::OpenOptions;
     let mut file = OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(queue_path())?;
-    file.write_all(input.trim().as_bytes())?;
-    file.write_all(b"\n")?;
-    file.flush()
+    file.lock_exclusive()?;
+    let result = (|| {
+        let line = format!("{}\n", input.trim());
+        file.write_all(line.as_bytes())?;
+        file.flush()
+    })();
+    let unlock_result = file.unlock();
+    finish_queue_operation(result, unlock_result)
 }
 
 pub fn drain_queued_events() -> io::Result<Vec<String>> {
     let path = queue_path();
-    let input = match std::fs::read_to_string(&path) {
-        Ok(input) => input,
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&path)
+    {
+        Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
-    let _ = std::fs::remove_file(&path);
-    Ok(input
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(str::to_string)
-        .collect())
+    file.lock_exclusive()?;
+    let result = (|| {
+        file.seek(SeekFrom::Start(0))?;
+        let mut input = String::new();
+        file.read_to_string(&mut input)?;
+        file.set_len(0)?;
+        file.flush()?;
+        Ok(input
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect())
+    })();
+    let unlock_result = file.unlock();
+    finish_queue_operation(result, unlock_result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{append_event_json, drain_queued_events};
+    use fs2::FileExt;
+    use std::fs::OpenOptions;
+    use std::sync::{mpsc, Mutex, OnceLock};
+    use std::thread;
+    use std::time::Duration;
+
+    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    fn reset_queue() {
+        let _ = std::fs::remove_file(super::queue_path());
+    }
+
+    #[test]
+    fn append_waits_for_an_existing_queue_lock() {
+        let _test_guard = test_guard();
+        reset_queue();
+        append_event_json(r#"{"event":"seed"}"#).unwrap();
+        let lock_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(super::queue_path())
+            .unwrap();
+        lock_file.lock_exclusive().unwrap();
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer = thread::spawn(move || {
+            done_tx
+                .send(append_event_json(r#"{"event":"queued"}"#))
+                .unwrap();
+        });
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+
+        lock_file.unlock().unwrap();
+        assert!(done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .is_ok());
+        writer.join().unwrap();
+        assert_eq!(drain_queued_events().unwrap().len(), 2);
+        reset_queue();
+    }
+
+    #[test]
+    fn drain_waits_for_an_existing_queue_lock() {
+        let _test_guard = test_guard();
+        reset_queue();
+        append_event_json(r#"{"event":"queued"}"#).unwrap();
+        let lock_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(super::queue_path())
+            .unwrap();
+        lock_file.lock_exclusive().unwrap();
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let drainer = thread::spawn(move || {
+            done_tx.send(drain_queued_events()).unwrap();
+        });
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+
+        lock_file.unlock().unwrap();
+        assert_eq!(
+            done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .unwrap()
+                .len(),
+            1
+        );
+        drainer.join().unwrap();
+        reset_queue();
+    }
 }

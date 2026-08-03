@@ -1,6 +1,6 @@
 [package]
 name = "nonstop-notify"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["quangnv13"]
 description = "Desktop notification bridge for scripts, automation, and background services."
 repository = "https://github.com/quangnv13/nonstop-notify"
@@ -11,12 +11,13 @@ edition = "2021"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 interprocess = "2"
+fs2 = "0.4"
 open = "5"
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 rodio = { version = "0.22.2", default-features = false, features = ["playback", "wav", "mp3", "flac", "vorbis"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_Debug", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Diagnostics_Debug", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
