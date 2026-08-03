@@ -1,11 +1,12 @@
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
 use fs2::FileExt;
-use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions};
+use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions, Stream};
 
 const SOCKET_NAME: &str = "nonstop-notify.sock";
+const CONTROL_SOCKET_NAME: &str = "nonstop-notify-control.sock";
 
 fn finish_queue_operation<T>(
     result: io::Result<T>,
@@ -35,6 +36,63 @@ where
         }
     }
     Ok(())
+}
+
+pub fn listen_control<F>(on_stop: F) -> io::Result<()>
+where
+    F: Fn() + Send + 'static,
+{
+    let name = CONTROL_SOCKET_NAME.to_ns_name::<GenericNamespaced>()?;
+    let listener = ListenerOptions::new().name(name).create_sync()?;
+    for stream in listener.incoming() {
+        let stream = stream?;
+        let mut reader = BufReader::new(stream);
+        let mut command = String::new();
+        reader.read_line(&mut command)?;
+        let stream = reader.get_mut();
+        if is_stop_command(&command) {
+            stream.write_all(b"{\"ok\":true}\n")?;
+            stream.flush()?;
+            on_stop();
+        } else {
+            stream.write_all(b"{\"ok\":false,\"error\":\"unknown command\"}\n")?;
+            stream.flush()?;
+        }
+    }
+    Ok(())
+}
+
+fn is_stop_command(command: &str) -> bool {
+    command.trim() == "stop"
+}
+
+pub fn send_stop() -> io::Result<()> {
+    let name = CONTROL_SOCKET_NAME.to_ns_name::<GenericNamespaced>()?;
+    let mut stream = Stream::connect(name)?;
+    stream.write_all(b"stop\n")?;
+    stream.flush()?;
+    let mut response = String::new();
+    BufReader::new(stream).read_line(&mut response)?;
+    if response.trim() == "{\"ok\":true}" {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            response.trim().to_string(),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod control_tests {
+    use super::is_stop_command;
+
+    #[test]
+    fn stop_command_contract_is_single_word() {
+        assert!(is_stop_command("stop\n"));
+        assert!(!is_stop_command("stop-now\n"));
+        assert!(!is_stop_command("stop {\"force\":true}\n"));
+    }
 }
 
 pub fn spawn_daemon(config_path: Option<&Path>) -> io::Result<Child> {

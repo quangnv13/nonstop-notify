@@ -3,5 +3,7 @@
   "offsetLeft": 30,
   "offsetRight": 30,
   "borderWidth": 1,
-  "soundPath": null
+  "soundPath": null,
+  "logRotationHours": 24,
+  "logRetentionDays": 7
 }

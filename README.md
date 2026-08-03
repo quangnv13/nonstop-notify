@@ -15,6 +15,18 @@ Nonstop Notify is a lightweight desktop notification bridge for scripts, automat
 
 It was originally built for the Nonstop test platform, but the event format and CLI are suitable for any workflow that needs visible desktop feedback.
 
+## Contents
+
+- [Highlights](#highlights)
+- [Quick Start](#quick-start)
+- [CLI](#cli)
+- [Event Format](#event-format)
+- [Configuration](#configuration)
+- [Install](#install)
+- [Build from Source](#build-from-source)
+- [Privacy and Security](#privacy-and-security)
+- [Release](#release)
+
 ## Highlights
 
 - Accepts notifications as JSON through standard input or a command argument.
@@ -32,6 +44,12 @@ It was originally built for the Nonstop test platform, but the event format and 
 ## Quick Start
 
 ### Windows
+
+No configuration is required for a first notification. Verify the executable, then send an event:
+
+```powershell
+.\nonstop-notify.exe --self-check
+```
 
 Send an event from PowerShell:
 
@@ -55,7 +73,11 @@ The daemon starts automatically. Running it explicitly is optional:
 
 ### Linux
 
-After installing the DEB package or placing the AppImage binary on `PATH`, send an event from Bash:
+After installing the DEB package or placing the AppImage binary on `PATH`, verify it, then send an event from Bash:
+
+```bash
+nonstop-notify --self-check
+```
 
 ```bash
 printf '%s\n' '{"event":"deploy.started","toastId":"deploy:api","title":"Deploying API","message":"Publishing to staging","status":"loading","progress":0.35}' |
@@ -82,6 +104,12 @@ nonstop-notify emit --stdin [--config PATH]
 nonstop-notify emit --json JSON [--config PATH]
 nonstop-notify daemon [--config PATH]
 nonstop-notify --self-check [--config PATH]
+nonstop-notify config show [--config PATH]
+nonstop-notify config set <key> <value> [--config PATH]
+nonstop-notify status
+nonstop-notify log
+nonstop-notify start [--config PATH]
+nonstop-notify stop
 ```
 
 | Command | Purpose |
@@ -90,6 +118,12 @@ nonstop-notify --self-check [--config PATH]
 | `emit --json` | Reads one JSON event from the next command argument. |
 | `daemon` | Starts the background notification process. |
 | `--self-check` | Validates configuration, event parsing, sound decoding, and URL handling. |
+| `config show` | Prints effective JSON config and selected config path. Does not create a file. |
+| `config set` | Validates and atomically writes one config value; restarts a healthy daemon. |
+| `status` | Prints `running`, `stopped`, or stale-heartbeat `unresponsive` JSON. |
+| `log` | Prints raw JSONL content from the newest log file. |
+| `start` | Starts a healthy daemon or returns its existing PID. |
+| `stop` | Sends graceful stop control; already-stopped daemon is success. |
 
 Set `NONSTOP_NOTIFY_DEBUG=1` to print CLI errors. Set `NONSTOP_NOTIFY_CONFIG` to provide a default configuration file without passing `--config` each time.
 
@@ -146,7 +180,21 @@ Relative routes beginning with `/` open against the default local Nonstop dashbo
 
 ## Configuration
 
-Copy `nonstop-notify.config.example.json` and adjust it:
+Configuration precedence is `--config PATH`, `NONSTOP_NOTIFY_CONFIG`, the per-user config file, then built-in defaults. `config show` reports effective values and does not create the default file.
+
+Default config paths:
+
+- Windows: `%LOCALAPPDATA%\Nonstop Notify\config.json`
+- Linux: `$XDG_CONFIG_HOME/nonstop-notify/config.json`, falling back to `~/.config/nonstop-notify/config.json`
+
+Those paths are only fallbacks. A config file can live anywhere: pass its path with `--config PATH`, or set `NONSTOP_NOTIFY_CONFIG` to that path. `--config` wins over the environment variable and per-user default.
+
+```powershell
+.\nonstop-notify.exe config set position bottom-right --config D:\tools\nonstop-notify\config.json
+.\nonstop-notify.exe emit --stdin --config D:\tools\nonstop-notify\config.json
+```
+
+Default config sample. Copy this structure into `config.json` when creating a per-user config:
 
 ```json
 {
@@ -154,15 +202,37 @@ Copy `nonstop-notify.config.example.json` and adjust it:
   "offsetLeft": 30,
   "offsetRight": 30,
   "borderWidth": 1,
-  "soundPath": null
+  "soundPath": null,
+  "logRotationHours": 24,
+  "logRetentionDays": 7
 }
 ```
 
 Supported positions: `top-left`, `top-right`, `bottom-left`, and `bottom-right`.
 
+`config set` supports `position`, `offsetLeft`, `offsetRight`, `borderWidth`, `soundPath`, `logRotationHours`, and `logRetentionDays`. Use `soundPath none` to write `null`.
+
 `soundPath` is optional and takes precedence when set. When omitted or `null`, the daemon first checks for a decodable `notify-ring.mp3` beside the executable. If that runtime override is missing or invalid, Windows uses the native system notification sound and other platforms play a short deterministic WAV generated during the Rust build.
 
 `--self-check` fails when an explicit `soundPath` cannot be read or decoded. A missing or invalid adjacent `notify-ring.mp3` falls back to the default sound without discarding notifications; set `NONSTOP_NOTIFY_DEBUG=1` to log the fallback.
+
+Management examples:
+
+```powershell
+.\nonstop-notify.exe config show
+.\nonstop-notify.exe config set position bottom-right
+.\nonstop-notify.exe config set soundPath none
+.\nonstop-notify.exe start
+.\nonstop-notify.exe status
+.\nonstop-notify.exe log
+.\nonstop-notify.exe stop
+```
+
+`config set` validates values and atomically writes `config.json`. A healthy running daemon receives graceful `stop`, then starts with new config; a stopped daemon only saves the file. An `unresponsive` daemon is not force-killed. If restart fails after saving, the command exits `1` and returns `configSaved: true` on stderr.
+
+Management errors are JSON on stderr with exit code `1`. `emit` stays silent unless `NONSTOP_NOTIFY_DEBUG` is set.
+
+Runtime state is stored in `runtime.json` beside the config. JSONL logs are stored in `logs/current.log`; files rotate after `logRotationHours` (default 24) and files whose modified time is at least `logRetentionDays` old (default 7 days) are removed. Logs contain lifecycle and event metadata only; notification `title`, `message`, `route`, actions, and payload JSON are never written.
 
 ```powershell
 .\nonstop-notify.exe emit --stdin --config .\nonstop-notify.config.json
@@ -183,7 +253,7 @@ Install with WinGet after the package is published:
 winget install --id quangnv13.nonstop-notify --exact
 ```
 
-WinGet installs the portable executable and registers the `nonstop-notify` command. Close existing terminal windows, open a new terminal, then verify the CLI:
+WinGet installs the portable executable and registers the `nonstop-notify` command. This release does not mutate User `PATH`. Close existing terminal windows, open a new terminal, then verify the CLI:
 
 ```powershell
 nonstop-notify --self-check
@@ -248,7 +318,7 @@ npm.cmd --prefix ui-react run dev
 
 - Notification events remain on the local machine.
 - The app does not include analytics, telemetry, advertising, or user accounts.
-- Temporary queue, heartbeat, and daemon lock files are stored in the operating system temporary directory.
+- Event queue and daemon lock files are stored in the operating system temporary directory; config, runtime state, and logs stay in the per-user data directory described above.
 - Notification actions open only relative dashboard routes or absolute HTTP(S) URLs.
 - Treat notification text as visible desktop content and avoid sending secrets in events.
 

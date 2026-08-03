@@ -1,16 +1,23 @@
 mod actions;
 mod event;
 mod ipc;
+mod runtime;
 mod toast_store;
 
-use std::io::{self, BufRead, Cursor};
+use std::fmt;
+use std::io::{self, BufRead, Cursor, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::Duration;
 
 use actions::build_url;
 use event::parse_event;
-use serde::{Deserialize, Serialize};
+use runtime::{NotificationPosition, NotifyConfig, RuntimePaths};
+use serde::Serialize;
+use serde_json::{json, Value};
 use tauri::{
     AppHandle, Manager, PhysicalPosition, Position, Size, WebviewUrl, WebviewWindowBuilder,
 };
@@ -21,59 +28,14 @@ const NOTIFICATION_SOUND: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/noti
 const WINDOW_WIDTH: f64 = 430.0;
 const MAX_WINDOW_HEIGHT: f64 = 760.0;
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-enum NotificationPosition {
-    TopLeft,
-    TopRight,
-    #[default]
-    BottomLeft,
-    BottomRight,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
-struct NotifyConfig {
-    position: NotificationPosition,
-    offset_left: u16,
-    offset_right: u16,
-    border_width: u16,
-    sound_path: Option<PathBuf>,
-}
-
-impl Default for NotifyConfig {
-    fn default() -> Self {
-        Self {
-            position: NotificationPosition::default(),
-            offset_left: 30,
-            offset_right: 30,
-            border_width: 1,
-            sound_path: None,
-        }
-    }
-}
-
+#[cfg(test)]
+#[cfg_attr(not(test), allow(dead_code))]
 fn parse_config(input: &str) -> Result<NotifyConfig, serde_json::Error> {
-    serde_json::from_str(input)
+    runtime::parse_config(input)
 }
 
 fn load_config(path: Option<&Path>) -> Result<NotifyConfig, Box<dyn std::error::Error>> {
-    let Some(path) = path else {
-        return Ok(NotifyConfig::default());
-    };
-    let input = std::fs::read_to_string(path).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("failed to read notify config {}: {error}", path.display()),
-        )
-    })?;
-    parse_config(&input).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("invalid notify config {}: {error}", path.display()),
-        )
-        .into()
-    })
+    runtime::load_config(path).map(|(config, _)| config)
 }
 
 fn config_path_from_args(args: &[String]) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
@@ -87,6 +49,44 @@ fn config_path_from_args(args: &[String]) -> Result<Option<PathBuf>, Box<dyn std
 }
 
 type SharedStore = Arc<Mutex<ToastStore>>;
+
+#[derive(Debug)]
+struct ManagementError {
+    message: String,
+    config_saved: Option<bool>,
+}
+
+impl ManagementError {
+    fn new(error: impl ToString) -> Self {
+        Self {
+            message: error.to_string(),
+            config_saved: None,
+        }
+    }
+
+    fn with_config_saved(error: impl ToString) -> Self {
+        Self {
+            message: error.to_string(),
+            config_saved: Some(true),
+        }
+    }
+
+    fn json(&self) -> Value {
+        let mut output = json!({"error": self.message});
+        if let Some(config_saved) = self.config_saved {
+            output["configSaved"] = json!(config_saved);
+        }
+        output
+    }
+}
+
+impl fmt::Display for ManagementError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ManagementError {}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,54 +105,360 @@ struct UiState {
     window_visible: Mutex<bool>,
     window_size: Mutex<(i32, i32)>,
     config: NotifyConfig,
+    runtime_paths: RuntimePaths,
+    stopping: Arc<AtomicBool>,
 }
 
 impl UiState {
-    fn new(config: NotifyConfig) -> Self {
+    fn new(config: NotifyConfig, runtime_paths: RuntimePaths) -> Self {
         Self {
             store: SharedStore::default(),
             expanded: Mutex::new(false),
             window_visible: Mutex::new(false),
             window_size: Mutex::new((0, 0)),
             config,
+            runtime_paths,
+            stopping: Arc::new(AtomicBool::new(false)),
         }
     }
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let result = config_path_from_args(&args).and_then(|config_path| {
-        if args.iter().any(|arg| arg == "--self-check") {
-            self_check(config_path.as_deref())
-        } else if args.get(1).map(String::as_str) == Some("emit")
-            && args.iter().any(|arg| arg == "--stdin")
-        {
-            emit_stdin(config_path.as_deref())
-        } else if args.get(1).map(String::as_str) == Some("emit")
-            && args.get(2).map(String::as_str) == Some("--json")
-        {
-            emit_json(
-                args.get(3).cloned().unwrap_or_default(),
-                config_path.as_deref(),
-            )
-        } else if args.get(1).map(String::as_str) == Some("daemon") {
-            if std::env::var_os("NONSTOP_NOTIFY_DAEMONIZED").is_some() {
-                run_daemon(config_path.as_deref())
-            } else {
-                ipc::spawn_daemon(config_path.as_deref())
-                    .map(|_| ())
-                    .map_err(Into::into)
-            }
-        } else {
-            Ok(())
+    let management = is_management_command(&args);
+    if management {
+        if let Err(error) = run_management_command(&args) {
+            eprintln!(
+                "{}",
+                serde_json::to_string(&error.json())
+                    .unwrap_or_else(|_| "{\"error\":\"management command failed\"}".into())
+            );
+            std::process::exit(1);
         }
-    });
-
-    if let Err(error) = result {
+        return;
+    }
+    if let Err(error) = run_legacy_command(&args) {
         if std::env::var_os("NONSTOP_NOTIFY_DEBUG").is_some() {
             eprintln!("nonstop-notify: {error}");
         }
         std::process::exit(1);
+    }
+}
+
+fn is_management_command(args: &[String]) -> bool {
+    matches!(
+        args.get(1).map(String::as_str),
+        Some("config" | "status" | "log" | "start" | "stop")
+    )
+}
+
+fn run_legacy_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = config_path_from_args(args)?;
+    if args.iter().any(|arg| arg == "--self-check") {
+        self_check(config_path.as_deref())
+    } else if args.get(1).map(String::as_str) == Some("emit")
+        && args.iter().any(|arg| arg == "--stdin")
+    {
+        emit_stdin(config_path.as_deref())
+    } else if args.get(1).map(String::as_str) == Some("emit")
+        && args.get(2).map(String::as_str) == Some("--json")
+    {
+        emit_json(
+            args.get(3).cloned().unwrap_or_default(),
+            config_path.as_deref(),
+        )
+    } else if args.get(1).map(String::as_str) == Some("daemon") {
+        if std::env::var_os("NONSTOP_NOTIFY_DAEMONIZED").is_some() {
+            run_daemon(config_path.as_deref())
+        } else {
+            ipc::spawn_daemon(config_path.as_deref())
+                .map(|_| ())
+                .map_err(Into::into)
+        }
+    } else {
+        Ok(())
+    }
+}
+
+fn run_management_command(args: &[String]) -> Result<(), ManagementError> {
+    let config_path = config_path_from_args(args).map_err(ManagementError::new)?;
+    match args.get(1).map(String::as_str) {
+        Some("config") => run_config_command(args, config_path.as_deref()),
+        Some("status") => print_status_command(),
+        Some("log") => print_log_command(),
+        Some("start") => start_command(config_path.as_deref()),
+        Some("stop") => stop_command(),
+        _ => Err(ManagementError::new("unknown management command")),
+    }
+}
+
+fn run_config_command(args: &[String], config_path: Option<&Path>) -> Result<(), ManagementError> {
+    match args.get(2).map(String::as_str) {
+        Some("show") => {
+            let (config, path) = runtime::load_config(config_path).map_err(ManagementError::new)?;
+            let mut output = serde_json::to_value(config).map_err(ManagementError::new)?;
+            output["configPath"] = json!(path);
+            println!(
+                "{}",
+                serde_json::to_string(&output).map_err(ManagementError::new)?
+            );
+            Ok(())
+        }
+        Some("set") => {
+            let key = args
+                .get(3)
+                .ok_or_else(|| ManagementError::new("config set requires <key>"))?;
+            let value = args
+                .get(4)
+                .ok_or_else(|| ManagementError::new("config set requires <value>"))?;
+            let (mut config, path) =
+                runtime::load_config(config_path).map_err(ManagementError::new)?;
+            runtime::set_config_value(&mut config, key, value).map_err(ManagementError::new)?;
+            runtime::write_config(&path, &config).map_err(ManagementError::new)?;
+            let status = daemon_status().map_err(ManagementError::new)?;
+            let mut restarted = false;
+            let mut pid = None;
+            if status.running() {
+                if let Ok(paths) = runtime::runtime_paths() {
+                    log_runtime_metadata(
+                        &paths,
+                        &config,
+                        json!({"type":"config.restart","configPath":path}),
+                    );
+                }
+                if let Err(error) = stop_daemon() {
+                    if let Ok(paths) = runtime::runtime_paths() {
+                        log_runtime_metadata(
+                            &paths,
+                            &config,
+                            json!({"type":"config.restart.failed","phase":"stop"}),
+                        );
+                    }
+                    return Err(ManagementError::with_config_saved(error));
+                }
+                match start_daemon(config_path) {
+                    Ok(started_pid) => pid = Some(started_pid),
+                    Err(error) => {
+                        if let Ok(paths) = runtime::runtime_paths() {
+                            log_runtime_metadata(
+                                &paths,
+                                &config,
+                                json!({"type":"config.restart.failed","phase":"start"}),
+                            );
+                        }
+                        return Err(ManagementError::with_config_saved(error));
+                    }
+                }
+                restarted = true;
+            }
+            let mut output = json!({"configSaved":true,"configPath":path,"restarted":restarted});
+            if let Some(pid) = pid {
+                output["pid"] = json!(pid);
+            }
+            println!(
+                "{}",
+                serde_json::to_string(&output).map_err(ManagementError::new)?
+            );
+            Ok(())
+        }
+        _ => Err(ManagementError::new("config requires show or set")),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DaemonStatusKind {
+    Running,
+    Stopped,
+    Unresponsive,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DaemonStatus {
+    kind: DaemonStatusKind,
+    pid: Option<u32>,
+    heartbeat_age_ms: Option<u64>,
+}
+
+impl DaemonStatus {
+    fn running(self) -> bool {
+        self.kind == DaemonStatusKind::Running
+    }
+
+    fn json(self) -> Value {
+        match self.kind {
+            DaemonStatusKind::Stopped => json!({"status":"stopped"}),
+            DaemonStatusKind::Running => {
+                json!({"status":"running","pid":self.pid,"heartbeatAgeMs":self.heartbeat_age_ms})
+            }
+            DaemonStatusKind::Unresponsive => {
+                json!({"status":"unresponsive","pid":self.pid,"heartbeatAgeMs":self.heartbeat_age_ms})
+            }
+        }
+    }
+}
+
+fn daemon_status() -> Result<DaemonStatus, Box<dyn std::error::Error>> {
+    let paths = runtime::runtime_paths()?;
+    Ok(status_from_state(runtime::read_runtime_state(&paths)?))
+}
+
+fn status_from_state(state: Option<runtime::RuntimeState>) -> DaemonStatus {
+    let Some(state) = state else {
+        return DaemonStatus {
+            kind: DaemonStatusKind::Stopped,
+            pid: None,
+            heartbeat_age_ms: None,
+        };
+    };
+    let age = runtime::heartbeat_age_ms(&state);
+    let kind = if age < runtime::HEARTBEAT_STALE_AFTER.as_millis() as u64 {
+        DaemonStatusKind::Running
+    } else {
+        DaemonStatusKind::Unresponsive
+    };
+    DaemonStatus {
+        kind,
+        pid: Some(state.pid),
+        heartbeat_age_ms: Some(age),
+    }
+}
+
+fn print_status_command() -> Result<(), ManagementError> {
+    let status = daemon_status().map_err(ManagementError::new)?;
+    println!(
+        "{}",
+        serde_json::to_string(&status.json()).map_err(ManagementError::new)?
+    );
+    Ok(())
+}
+
+fn print_log_command() -> Result<(), ManagementError> {
+    let paths = runtime::runtime_paths().map_err(ManagementError::new)?;
+    if let Some(log) = runtime::latest_log(&paths).map_err(ManagementError::new)? {
+        io::stdout().write_all(&log).map_err(ManagementError::new)?;
+    }
+    Ok(())
+}
+
+fn start_command(config_path: Option<&Path>) -> Result<(), ManagementError> {
+    let pid = start_daemon(config_path).map_err(ManagementError::new)?;
+    println!(
+        "{}",
+        serde_json::to_string(&json!({"status":"running","pid":pid}))
+            .map_err(ManagementError::new)?
+    );
+    Ok(())
+}
+
+fn stop_command() -> Result<(), ManagementError> {
+    stop_daemon().map_err(ManagementError::new)?;
+    println!(
+        "{}",
+        serde_json::to_string(&json!({"status":"stopped"})).map_err(ManagementError::new)?
+    );
+    Ok(())
+}
+
+fn start_daemon(config_path: Option<&Path>) -> Result<u32, Box<dyn std::error::Error>> {
+    if let DaemonStatus {
+        kind: DaemonStatusKind::Running,
+        pid: Some(pid),
+        ..
+    } = daemon_status()?
+    {
+        return Ok(pid);
+    }
+    ipc::spawn_daemon(config_path)?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if let DaemonStatus {
+            kind: DaemonStatusKind::Running,
+            pid: Some(pid),
+            ..
+        } = daemon_status()?
+        {
+            return Ok(pid);
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "daemon did not become healthy within 5 seconds",
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn stop_daemon() -> Result<(), Box<dyn std::error::Error>> {
+    let initial_status = daemon_status()?;
+    if initial_status.kind == DaemonStatusKind::Stopped {
+        return Ok(());
+    }
+    if let Err(error) = ipc::send_stop() {
+        let status = daemon_status()?;
+        if status.kind == DaemonStatusKind::Stopped {
+            return Ok(());
+        }
+        if status.kind == DaemonStatusKind::Unresponsive {
+            if let Some(pid) = status.pid {
+                if process_is_alive(pid) == Some(false) {
+                    let paths = runtime::runtime_paths()?;
+                    runtime::remove_runtime_state(&paths)?;
+                    return Ok(());
+                }
+            }
+        }
+        return Err(error.into());
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if daemon_status()?.kind == DaemonStatusKind::Stopped {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "daemon did not stop within 5 seconds",
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn process_is_alive(pid: u32) -> Option<bool> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Foundation::{
+            CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, HANDLE, STILL_ACTIVE,
+        };
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        let handle: HANDLE = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return if unsafe { GetLastError() } == ERROR_INVALID_PARAMETER {
+                Some(false)
+            } else {
+                None
+            };
+        }
+        let mut exit_code = 0;
+        let result = unsafe { GetExitCodeProcess(handle, &mut exit_code) };
+        unsafe { CloseHandle(handle) };
+        return (result != 0).then_some(exit_code == STILL_ACTIVE as u32);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return Some(std::path::Path::new("/proc").join(pid.to_string()).exists());
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = pid;
+        None
     }
 }
 
@@ -284,31 +590,34 @@ fn daemon_lock_path() -> std::path::PathBuf {
     path
 }
 
-fn daemon_heartbeat_path() -> std::path::PathBuf {
-    let mut path = std::env::temp_dir();
-    path.push("nonstop-notify-daemon.heartbeat");
-    path
-}
-
 fn daemon_heartbeat_is_fresh() -> bool {
-    std::fs::metadata(daemon_heartbeat_path())
-        .and_then(|metadata| metadata.modified())
-        .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
-        .map(|age| age < Duration::from_secs(3))
+    runtime::runtime_paths()
+        .and_then(|paths| runtime::read_runtime_state(&paths))
+        .map(|state| {
+            state
+                .map(|state| {
+                    runtime::heartbeat_age_ms(&state)
+                        < runtime::HEARTBEAT_STALE_AFTER.as_millis() as u64
+                })
+                .unwrap_or(false)
+        })
         .unwrap_or(false)
-}
-
-fn touch_daemon_heartbeat() {
-    let _ = std::fs::write(daemon_heartbeat_path(), b"ok");
 }
 
 fn run_daemon(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Error>> {
     let Some(_daemon_lock) = acquire_daemon_lock()? else {
         return Ok(());
     };
+    let runtime_paths = runtime::runtime_paths()?;
     let config = load_config(config_path)?;
-    tauri::Builder::default()
-        .manage(UiState::new(config))
+    runtime::write_runtime_state(&runtime_paths, std::process::id())?;
+    log_runtime_metadata(
+        &runtime_paths,
+        &config,
+        json!({"type":"daemon.start","pid":std::process::id()}),
+    );
+    let result = tauri::Builder::default()
+        .manage(UiState::new(config.clone(), runtime_paths.clone()))
         .invoke_handler(tauri::generate_handler![
             close_toast,
             open_route,
@@ -333,10 +642,24 @@ fn run_daemon(config_path: Option<&Path>) -> Result<(), Box<dyn std::error::Erro
             hide_from_taskbar(&handle);
             park_window(&handle, 1.0, 1.0);
             start_event_listener(handle.clone());
+            start_control_listener(handle.clone());
             start_prune_timer(handle);
             Ok(())
         })
-        .run(tauri::generate_context!())?;
+        .run(tauri::generate_context!());
+    let state_existed = runtime::read_runtime_state(&runtime_paths)
+        .ok()
+        .flatten()
+        .is_some();
+    let _ = runtime::remove_runtime_state(&runtime_paths);
+    if state_existed {
+        log_runtime_metadata(
+            &runtime_paths,
+            &config,
+            json!({"type":"daemon.stop","pid":std::process::id()}),
+        );
+    }
+    result?;
     Ok(())
 }
 
@@ -387,11 +710,33 @@ fn start_event_listener(app: AppHandle) {
             apply_event(&app, &event_json);
         }
         let listener_app = app.clone();
+        let error_app = app.clone();
         if let Err(error) =
             ipc::listen_events(move |event_json| apply_event(&listener_app, &event_json))
         {
+            append_app_log(
+                &error_app,
+                json!({"type":"control.failure","source":"event-listener","error":error.to_string()}),
+            );
             if std::env::var_os("NONSTOP_NOTIFY_DEBUG").is_some() {
                 eprintln!("nonstop-notify ipc: {error}");
+            }
+        }
+    });
+}
+
+fn start_control_listener(app: AppHandle) {
+    std::thread::spawn(move || {
+        let stop_app = app.clone();
+        if let Err(error) = ipc::listen_control(move || {
+            request_graceful_exit(&stop_app);
+        }) {
+            append_app_log(
+                &app,
+                json!({"type":"control.failure","source":"control-listener","error":error.to_string()}),
+            );
+            if std::env::var_os("NONSTOP_NOTIFY_DEBUG").is_some() {
+                eprintln!("nonstop-notify control: {error}");
             }
         }
     });
@@ -400,7 +745,11 @@ fn start_event_listener(app: AppHandle) {
 fn start_prune_timer(app: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(500));
-        touch_daemon_heartbeat();
+        let state = app.state::<UiState>();
+        if state.stopping.load(Ordering::Relaxed) {
+            break;
+        }
+        let _ = runtime::heartbeat(&state.runtime_paths, std::process::id());
         for event_json in ipc::drain_queued_events().unwrap_or_default() {
             apply_event(&app, &event_json);
         }
@@ -410,18 +759,62 @@ fn start_prune_timer(app: AppHandle) {
 fn apply_event(app: &AppHandle, event_json: &str) {
     match parse_event(event_json) {
         Ok(event) => {
+            let event_name = event.event.clone();
+            let toast_id = event.toast_id.clone();
             play_notification_sound(app.state::<UiState>().config.sound_path.clone());
             let state = app.state::<UiState>();
             if let Ok(mut store) = state.store.lock() {
                 store.upsert(event);
             }
             let _ = emit_state(app);
+            append_app_log(app, accepted_event_log(&event_name, &toast_id));
         }
         Err(error) if std::env::var_os("NONSTOP_NOTIFY_DEBUG").is_some() => {
+            append_app_log(
+                app,
+                json!({"type":"event.rejected","error":error.to_string()}),
+            );
             eprintln!("nonstop-notify event: {error}");
         }
-        Err(_) => {}
+        Err(error) => {
+            append_app_log(
+                app,
+                json!({"type":"event.rejected","error":error.to_string()}),
+            );
+        }
     }
+}
+
+fn accepted_event_log(event: &str, toast_id: &str) -> Value {
+    json!({"type":"event.accepted","event":event,"toastId":toast_id})
+}
+
+fn request_graceful_exit(app: &AppHandle) {
+    let state = app.state::<UiState>();
+    if state.stopping.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    append_app_log(app, json!({"type":"daemon.stop","pid":std::process::id()}));
+    let _ = runtime::remove_runtime_state(&state.runtime_paths);
+    let _ = app.exit(0);
+}
+
+fn log_runtime_metadata(paths: &RuntimePaths, config: &NotifyConfig, entry: Value) {
+    if let Err(error) = runtime::append_log(
+        paths,
+        config.log_rotation_hours,
+        config.log_retention_days,
+        &entry,
+    ) {
+        if std::env::var_os("NONSTOP_NOTIFY_DEBUG").is_some() {
+            eprintln!("nonstop-notify log: {error}");
+        }
+    }
+}
+
+fn append_app_log(app: &AppHandle, entry: Value) {
+    let state = app.state::<UiState>();
+    log_runtime_metadata(&state.runtime_paths, &state.config, entry);
 }
 
 fn validate_notification_sound(
@@ -993,6 +1386,78 @@ fn hide_from_taskbar(app: &AppHandle) {
 
 #[cfg(not(target_os = "windows"))]
 fn hide_from_taskbar(_: &AppHandle) {}
+
+#[cfg(test)]
+mod management_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn status_contract_distinguishes_stopped_running_and_stale() {
+        let stopped = status_from_state(None);
+        assert_eq!(stopped.kind, DaemonStatusKind::Stopped);
+        assert_eq!(stopped.json(), json!({"status":"stopped"}));
+
+        let heartbeat_at_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let running = status_from_state(Some(runtime::RuntimeState {
+            pid: 1234,
+            heartbeat_at_ms,
+        }));
+        assert_eq!(running.kind, DaemonStatusKind::Running);
+        assert_eq!(running.pid, Some(1234));
+        assert!(running.heartbeat_age_ms.unwrap() < 1000);
+
+        let stale = status_from_state(Some(runtime::RuntimeState {
+            pid: 1234,
+            heartbeat_at_ms: heartbeat_at_ms.saturating_sub(10_000),
+        }));
+        assert_eq!(stale.kind, DaemonStatusKind::Unresponsive);
+        assert_eq!(stale.json()["status"], "unresponsive");
+    }
+
+    #[test]
+    fn accepted_event_log_contains_only_event_metadata() {
+        let serialized = accepted_event_log("deploy.completed", "deploy:api").to_string();
+        assert!(serialized.contains("deploy.completed"));
+        assert!(serialized.contains("deploy:api"));
+        for field in [
+            "title",
+            "message",
+            "route",
+            "actions",
+            "primaryRoute",
+            "payload",
+        ] {
+            assert!(
+                !serialized.contains(field),
+                "unexpected field in log: {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_config_argument_wins_before_environment_lookup() {
+        let args = vec![
+            "nonstop-notify".into(),
+            "config".into(),
+            "show".into(),
+            "--config".into(),
+            "explicit.json".into(),
+        ];
+        assert_eq!(
+            config_path_from_args(&args).unwrap(),
+            Some(PathBuf::from("explicit.json"))
+        );
+    }
+
+    #[test]
+    fn impossible_pid_is_not_reported_alive() {
+        assert_eq!(process_is_alive(u32::MAX), Some(false));
+    }
+}
 
 #[cfg(all(test, target_os = "windows"))]
 mod daemon_lock_tests {
