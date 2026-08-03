@@ -16,18 +16,12 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": ["deb", "appimage"],
     "publisher": "quangnv13",
     "homepage": "https://github.com/quangnv13/nonstop-notify",
     "icon": ["icons/icon.ico", "icons/128x128.png"],
     "license": "MIT",
     "shortDescription": "Desktop notification bridge for scripts, automation, and background services.",
-    "copyright": "Copyright (c) 2026 quangnv13",
-    "windows": {
-      "nsis": {
-        "installMode": "currentUser",
-        "installerHooks": "windows/nsis-hooks.nsh"
-      }
-    }
+    "copyright": "Copyright (c) 2026 quangnv13"
   }
 }

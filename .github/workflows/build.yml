@@ -22,8 +22,7 @@ jobs:
         include:
           - name: windows-x64
             os: windows-latest
-            bundles: nsis
-            artifactPath: target/release/bundle/nsis/*.exe
+            artifactPath: target/release/nonstop-notify.exe
           - name: linux-x64
             os: ubuntu-22.04
             bundles: deb,appimage
@@ -74,22 +73,23 @@ jobs:
       - name: Run Rust tests
         run: cargo test --locked
 
-      - name: Check Windows installer PATH integration
+      - name: Build portable Windows binary
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/check-installer-path.ps1
+        run: cargo tauri build --no-bundle
 
-      - name: Build Tauri bundles
+      - name: Build Linux bundles
+        if: runner.os == 'Linux'
         uses: tauri-apps/tauri-action@v1
         with:
           args: --bundles ${{ matrix.bundles }}
 
-      - name: Smoke test installed Windows CLI
+      - name: Smoke test portable Windows CLI
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./scripts/smoke-test-windows-installer.ps1 -InstallerPath (Get-ChildItem target/release/bundle/nsis -Filter '*.exe').FullName
+        run: ./scripts/smoke-test-windows-portable.ps1 -BinaryPath target/release/nonstop-notify.exe
 
-      - name: Upload bundles
+      - name: Upload release artifacts
         id: upload-bundles
         uses: actions/upload-artifact@v4
         with:
@@ -98,11 +98,11 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Record Windows unsigned bundle artifact
+      - name: Record Windows portable artifact
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          echo "Windows unsigned bundle artifact ID: ${{ steps.upload-bundles.outputs.artifact-id }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Windows portable artifact ID: ${{ steps.upload-bundles.outputs.artifact-id }}" >> "$GITHUB_STEP_SUMMARY"
 
   release:
     name: Create GitHub Release

@@ -31,20 +31,20 @@ Main blockers before applying:
 | 2 | Every component uses an OSI-approved Open Source license without commercial dual licensing. | **PASS** | `node scripts/check-licenses.mjs` audited 459 Rust and 75 npm dependencies with 0 issues. CI runs the same consolidated license audit. |
 | 3 | No proprietary code or proprietary bundled component. | **PASS** | The unlicensed audio asset was removed. `build.rs` now generates the bundled WAV deterministically from project source, and the consolidated dependency audit reports 0 issues. |
 | 4 | Project is actively maintained. | **PASS** | Recent commits and successful GitHub Actions runs exist on `master`. |
-| 5 | Project is already released in the form to be signed. | **PASS** | Public Release `v0.1.0` contains the NSIS `.exe` installer form intended for future signing, plus DEB and AppImage packages. |
+| 5 | Project is already released in the form to be signed. | **PARTIAL** | Public Releases `v0.1.0` and `v0.1.1` contain historical Windows NSIS installers. Publish the portable Windows `.exe` in `v0.1.2` before relying on this evidence for future portable signing. |
 | 6 | Functionality is documented on the project/download page. | **PASS** | `README.md` documents purpose, commands, event schema, configuration, installation, privacy, and release flow. |
 | 7 | Team signs only projects it develops and maintains. | **PASS** | Repository and build scripts are owned and maintained by `quangnv13`. |
 | 8 | Team signs only binaries built from its own source. | **PASS** | GitHub Actions builds the repository's Rust, React, and packaging source directly. No upstream binary is submitted for signing. |
 | 9 | Software is not a hacking or security-circumvention tool. | **PASS** | Application receives JSON events and renders desktop notifications; it does not scan for or exploit vulnerabilities. |
 | 10 | Software respects user privacy and security. | **PASS** | `README.md` states that events remain local, telemetry is absent, and network access occurs only when explicitly requested through notification actions. |
-| 11 | System changes are announced. | **PASS** | Packaging uses a normal current-user NSIS installer. Installation behavior is documented in `RELEASING.md`. |
-| 12 | Installed software provides uninstallation. | **PASS** | Tauri NSIS produces an uninstaller and `RELEASING.md` requires verification through Windows Installed Apps. |
+| 11 | System changes are announced. | **PASS** | Windows now ships as a portable executable. WinGet manages the package command shim, and `RELEASING.md` documents the behavior. |
+| 12 | Installed software provides uninstallation. | **PARTIAL** | WinGet removes the portable package and command shim, but this behavior must be verified after `v0.1.2` is published. |
 | 13 | All team members use MFA for GitHub and SignPath. | **UNKNOWN** | Repository cannot prove account MFA. `quangnv13` must confirm GitHub 2FA before applying and enable SignPath MFA when invited. |
 | 14 | Authors, reviewers, and signing approvers are assigned. | **PASS** | `README.md` lists `quangnv13` as committer/reviewer and approver. |
 | 15 | Home page contains a **Code Signing Policy** heading or link. | **PASS** | `README.md` has a `Code Signing Policy` section and the exact SignPath attribution statement. |
 | 16 | Policy identifies roles and includes a privacy policy or required privacy statement. | **PASS** | `README.md` names the roles and contains the required no-network-transfer statement with the user-request exception. |
 | 17 | Download/release pages reference the code-signing policy. | **PASS** | Release `v0.1.0` begins with a link to the README `Code Signing Policy`; the workflow adds the same link to later release notes. |
-| 18 | Product name and version metadata are consistent in signed files. | **PASS** | Tauri product name is `Nonstop Notify`; `Cargo.toml` and `tauri.conf.json` both use version `0.1.1`. SignPath artifact restrictions still need configuration after approval. |
+| 18 | Product name and version metadata are consistent in signed files. | **PASS** | Tauri product name is `Nonstop Notify`; `Cargo.toml` and `tauri.conf.json` both use version `0.1.2`. SignPath artifact restrictions still need configuration after approval. |
 | 19 | Binary artifact is built from source in a verifiable automated build. | **PASS** | GitHub-hosted Windows and Linux jobs plus the release job passed in workflow run `30209450143`. |
 | 20 | Unsigned artifact is stored as a GitHub workflow artifact before signing submission. | **PASS** | Build matrix uses `actions/upload-artifact@v4` with a step `id`, exposing `artifact-id` before any future SignPath submission. The future submit action can consume that output after SignPath configuration exists. |
 | 21 | Every release receives manual approval before signing. | **POST-APPROVAL** | Configure SignPath signing policy and approver after acceptance. Current workflow performs no signing request. |
@@ -83,14 +83,14 @@ git push origin v0.1.0
 The tag push matched `v*`, causing the workflow to:
 
 1. Build and test Windows and Linux packages again from the tagged commit.
-2. Upload NSIS, DEB, and AppImage artifacts.
+2. Upload the portable Windows executable, DEB, and AppImage artifacts.
 3. Run `Create GitHub Release` after both matrix jobs pass.
 4. Attach the built artifacts to GitHub Release `v0.1.0`.
 
 Before applying to SignPath, verify:
 
 - Release is public and not a draft.
-- Windows release contains the versioned NSIS `.exe`.
+- Windows release contains the raw portable `nonstop-notify.exe`.
 - Installer downloads and uninstalls correctly.
 - Workflow-generated release notes contain the automatically prepended README `Code Signing Policy` link.
 - Release artifact is the same installer format intended for future signing.

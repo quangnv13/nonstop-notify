@@ -172,7 +172,7 @@ Supported positions: `top-left`, `top-right`, `bottom-left`, and `bottom-right`.
 
 Tagged GitHub releases are built for:
 
-- Windows x64 as an NSIS installer.
+- Windows x64 as a portable executable.
 - Linux x64 as DEB and AppImage packages.
 
 ### Windows
@@ -183,13 +183,17 @@ Install with WinGet after the package is published:
 winget install --id quangnv13.nonstop-notify --exact
 ```
 
-The NSIS installer adds its install directory to the current user's `PATH`. Close existing terminal windows, open a new terminal, then verify the CLI:
+WinGet installs the portable executable and registers the `nonstop-notify` command. Close existing terminal windows, open a new terminal, then verify the CLI:
 
 ```powershell
 nonstop-notify --self-check
 ```
 
-Uninstalling removes only the `PATH` entry created by the installer.
+You can also download the Windows `.exe` directly from a GitHub release and run it without an installer. To remove the WinGet package:
+
+```powershell
+winget uninstall --id quangnv13.nonstop-notify --exact
+```
 
 ### Linux DEB
 
@@ -230,7 +234,8 @@ Requirements:
 npm.cmd ci --prefix ui-react --ignore-scripts
 npm.cmd --prefix ui-react run build
 cargo test --locked
-cargo tauri build --bundles nsis
+cargo tauri build --no-bundle # Windows portable executable
+cargo tauri build --bundles deb,appimage # Linux packages
 ```
 
 For frontend development:
